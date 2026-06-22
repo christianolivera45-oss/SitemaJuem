@@ -813,7 +813,7 @@ const aiClient = new GoogleGenAI({
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
 
   // Run DB setup code
   await initDb();
