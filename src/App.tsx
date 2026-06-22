@@ -73,6 +73,18 @@ interface Article {
     nombre: string;
     cantidad: number;
   }>;
+  original_price?: number | null;
+  description?: string;
+  category?: string;
+  subcategory?: string;
+  featured?: boolean;
+  paused?: boolean;
+  is_3d?: boolean;
+  consult_only?: boolean;
+  categoria_id?: string | null;
+  subcategoria_id?: string | null;
+  imagenes?: string | null;
+  variants?: string | null;
 }
 
 interface Sale {
@@ -234,6 +246,8 @@ export default function App() {
   const [sales, setSales] = useState<Sale[]>([]);
   const [gastos, setGastos] = useState<Gasto[]>([]);
   const [envios, setEnvios] = useState<Envio[]>([]);
+  const [ecomCategories, setEcomCategories] = useState<any[]>([]);
+  const [ecomSubcategories, setEcomSubcategories] = useState<any[]>([]);
   const [stats, setStats] = useState<Stats>({
     billingTodayTotal: 1000,
     ordersTodayCount: 1,
@@ -273,7 +287,19 @@ export default function App() {
     tipo: 'simple' as 'simple' | 'compuesto',
     componentes: [] as any[],
     comision_ml: '11',
-    precio_venta_ml: ''
+    precio_venta_ml: '',
+    original_price: '',
+    description: '',
+    category: '',
+    subcategory: '',
+    featured: false,
+    paused: false,
+    is_3d: false,
+    consult_only: false,
+    categoria_id: '',
+    subcategoria_id: '',
+    imagenes: '',
+    variants: '[]'
   });
   const [editIngredientId, setEditIngredientId] = useState('');
   const [editIngredientQty, setEditIngredientQty] = useState(1);
@@ -857,6 +883,12 @@ export default function App() {
           let parsedDetails: any[] = [];
           if (Array.isArray(data.detalles_remitidos)) {
             parsedDetails = data.detalles_remitidos.map((x: any) => {
+              const rawCost = Number(x.costo_unitario) || 0;
+              const tipoIvaVal = 22; // default standard Uruguayan VAT rate
+              const costNeto = rawCost / 1.22;
+              const ivaUnit = rawCost - costNeto;
+              const costConIva = rawCost;
+
               const existingItem = catalog.find(item => item.codigo.toUpperCase() === String(x.codigo_sugerido || '').toUpperCase());
               
               if (existingItem) {
@@ -865,7 +897,11 @@ export default function App() {
                   codigo: existingItem.codigo,
                   nombre: existingItem.nombre,
                   cantidad: Number(x.cantidad) || 1,
-                  costo_unitario: Number(x.costo_unitario) || 0,
+                  costo_unitario: Number(costNeto.toFixed(4)),
+                  tipo_iva: tipoIvaVal,
+                  modo_iva: 'con_iva',
+                  iva_unitario: Number(ivaUnit.toFixed(4)),
+                  costo_con_iva: costConIva,
                   precio_sugerido: Number(existingItem.precio_venta) || 0
                 };
               } else {
@@ -880,7 +916,11 @@ export default function App() {
                     codigo: matchedByName.codigo,
                     nombre: matchedByName.nombre,
                     cantidad: Number(x.cantidad) || 1,
-                    costo_unitario: Number(x.costo_unitario) || 0,
+                    costo_unitario: Number(costNeto.toFixed(4)),
+                    tipo_iva: tipoIvaVal,
+                    modo_iva: 'con_iva',
+                    iva_unitario: Number(ivaUnit.toFixed(4)),
+                    costo_con_iva: costConIva,
                     precio_sugerido: Number(matchedByName.precio_venta) || 0
                   };
                 } else {
@@ -889,7 +929,11 @@ export default function App() {
                     codigo: 'Añadir nuevo SKU',
                     nombre: x.nombre_factura,
                     cantidad: Number(x.cantidad) || 1,
-                    costo_unitario: Number(x.costo_unitario) || 0,
+                    costo_unitario: Number(costNeto.toFixed(4)),
+                    tipo_iva: tipoIvaVal,
+                    modo_iva: 'con_iva',
+                    iva_unitario: Number(ivaUnit.toFixed(4)),
+                    costo_con_iva: costConIva,
                     precio_sugerido: 0
                   };
                 }
@@ -1049,6 +1093,24 @@ export default function App() {
   });
   const [adjustSuccess, setAdjustSuccess] = useState('');
 
+  const [newArticleStep, setNewArticleStep] = useState(1);
+  const [editArticleStep, setEditArticleStep] = useState(1);
+
+  // States for Variant Builder (New Article and Edit Article)
+  const [varSize, setVarSize] = useState('');
+  const [varColor, setVarColor] = useState('');
+  const [varColorCode, setVarColorCode] = useState('');
+  const [varStock, setVarStock] = useState('10');
+  const [varImageUrl, setVarImageUrl] = useState('');
+  const [varSku, setVarSku] = useState('');
+
+  const [editVarSize, setEditVarSize] = useState('');
+  const [editVarColor, setEditVarColor] = useState('');
+  const [editVarColorCode, setEditVarColorCode] = useState('');
+  const [editVarStock, setEditVarStock] = useState('10');
+  const [editVarImageUrl, setEditVarImageUrl] = useState('');
+  const [editVarSku, setEditVarSku] = useState('');
+
   const [newArticle, setNewArticle] = useState({
     codigo: '',
     nombre: '',
@@ -1056,7 +1118,19 @@ export default function App() {
     precio_venta: '',
     comision_ml: '11',
     precio_venta_ml: '',
-    imagen_url: ''
+    imagen_url: '',
+    original_price: '',
+    description: '',
+    category: '',
+    subcategory: '',
+    featured: false,
+    paused: false,
+    is_3d: false,
+    consult_only: false,
+    categoria_id: '',
+    subcategoria_id: '',
+    imagenes: '',
+    variants: '[]'
   });
   const [articleSuccess, setArticleSuccess] = useState('');
   const [articleError, setArticleError] = useState('');
@@ -1159,6 +1233,20 @@ export default function App() {
   const refreshSystemData = async () => {
     setIsLoading(true);
     try {
+      // Fetch dynamic e-commerce category/subcategory metadata
+      try {
+        const metadataRes = await fetch('/api/integrations/metadata');
+        if (metadataRes.ok) {
+          const metaData = await metadataRes.json();
+          if (metaData.success) {
+            setEcomCategories(metaData.categories || []);
+            setEcomSubcategories(metaData.subcategories || []);
+          }
+        }
+      } catch (metaErr) {
+        console.error("Error al obtener metadatos de sincronización e-commerce:", metaErr);
+      }
+
       const artResponse = await fetch('/api/articulos');
       let loadedCatalog: Article[] = [];
       if (artResponse.ok) {
@@ -1279,7 +1367,19 @@ export default function App() {
           imagen_url: newArticle.imagen_url.trim(),
           inicial_mvd: 0,
           inicial_pin: 0,
-          comision_ml_raw: String(newArticle.comision_ml || '11')
+          comision_ml_raw: String(newArticle.comision_ml || '11'),
+          original_price: newArticle.original_price === '' ? null : Number(newArticle.original_price),
+          description: newArticle.description,
+          category: newArticle.category,
+          subcategory: newArticle.subcategory,
+          featured: newArticle.featured,
+          paused: newArticle.paused,
+          is_3d: newArticle.is_3d,
+          consult_only: newArticle.consult_only,
+          categoria_id: newArticle.categoria_id,
+          subcategoria_id: newArticle.subcategoria_id,
+          imagenes: newArticle.imagenes,
+          variants: newArticle.variants
         })
       });
 
@@ -1297,7 +1397,19 @@ export default function App() {
         precio_venta: '',
         comision_ml: '11',
         precio_venta_ml: '',
-        imagen_url: ''
+        imagen_url: '',
+        original_price: '',
+        description: '',
+        category: '',
+        subcategory: '',
+        featured: false,
+        paused: false,
+        is_3d: false,
+        consult_only: false,
+        categoria_id: '',
+        subcategoria_id: '',
+        imagenes: '',
+        variants: '[]'
       });
       refreshSystemData();
       if (output.item) {
@@ -1342,10 +1454,23 @@ export default function App() {
       tipo: art.tipo || 'simple',
       componentes: art.componentes || [],
       comision_ml: userCom,
-      precio_venta_ml: art.precio_venta_ml !== undefined && art.precio_venta_ml !== null ? String(art.precio_venta_ml) : ''
+      precio_venta_ml: art.precio_venta_ml !== undefined && art.precio_venta_ml !== null ? String(art.precio_venta_ml) : '',
+      original_price: art.original_price ? String(art.original_price) : '',
+      description: art.description || '',
+      category: art.category || '',
+      subcategory: art.subcategory || '',
+      featured: !!art.featured,
+      paused: !!art.paused,
+      is_3d: !!art.is_3d,
+      consult_only: !!art.consult_only,
+      categoria_id: art.categoria_id || '',
+      subcategoria_id: art.subcategoria_id || '',
+      imagenes: art.imagenes || '',
+      variants: art.variants || '[]'
     });
     setEditIngredientId('');
     setEditIngredientQty(1);
+    setEditArticleStep(1);
     setIsEditingArticle(true);
   };
 
@@ -1378,7 +1503,19 @@ export default function App() {
           componentes: editArticleForm.componentes,
           comision_ml: commPct,
           precio_venta_ml: mlVenta,
-          comision_ml_raw: String(editArticleForm.comision_ml || '11')
+          comision_ml_raw: String(editArticleForm.comision_ml || '11'),
+          original_price: editArticleForm.original_price === '' ? null : Number(editArticleForm.original_price),
+          description: editArticleForm.description,
+          category: editArticleForm.category,
+          subcategory: editArticleForm.subcategory,
+          featured: editArticleForm.featured,
+          paused: editArticleForm.paused,
+          is_3d: editArticleForm.is_3d,
+          consult_only: editArticleForm.consult_only,
+          categoria_id: editArticleForm.categoria_id,
+          subcategoria_id: editArticleForm.subcategoria_id,
+          imagenes: editArticleForm.imagenes,
+          variants: editArticleForm.variants
         })
       });
 
@@ -3011,6 +3148,7 @@ export default function App() {
                       onClick={() => {
                         setCreationType('simple');
                         setIsCreateModalOpen(true);
+                        setNewArticleStep(1);
                         setArticleSuccess('');
                         setArticleError('');
                         setComboSuccess('');
@@ -9813,6 +9951,187 @@ export default function App() {
                     />
                   </div>
 
+                  {/* Integración E-Commerce (Web Juem) inside Edit */}
+                  <div className="bg-slate-50 border border-slate-200/60 rounded-2xl p-4 mt-2 space-y-4">
+                    <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+                      <span className="text-xs font-bold text-slate-700 flex items-center gap-1.5">
+                        🌐 Configuración E-Commerce (Web Juem)
+                      </span>
+                      <span className="text-[9px] bg-indigo-100 text-indigo-700 font-extrabold px-1.5 py-0.5 rounded-full uppercase tracking-wider">
+                        Sincronización Activa
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+                      {/* Precio Original (para Ofertas) */}
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">Precio Original/Tachado ($)</label>
+                        <input
+                          type="number"
+                          min="0"
+                          value={editArticleForm.original_price}
+                          onChange={(e) => setEditArticleForm(prev => ({ ...prev, original_price: e.target.value }))}
+                          placeholder="Ej: 1890"
+                          className="w-full bg-white border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs text-slate-800 font-bold font-mono focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                        />
+                      </div>
+
+                      {/* Categoría */}
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">Categoría E-Commerce</label>
+                        {ecomCategories.length > 0 ? (
+                          <select
+                            value={editArticleForm.categoria_id || ""}
+                            onChange={(e) => {
+                              const selectedId = e.target.value;
+                              const catObj = ecomCategories.find(c => String(c.id) === String(selectedId));
+                              setEditArticleForm(prev => ({
+                                ...prev,
+                                categoria_id: selectedId,
+                                category: catObj ? catObj.nombre : "",
+                                subcategoria_id: "",
+                                subcategory: ""
+                              }));
+                            }}
+                            className="w-full bg-white border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs text-slate-800 font-bold focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                          >
+                            <option value="">-- Seleccionar Categoría --</option>
+                            {ecomCategories.map(cat => (
+                              <option key={cat.id} value={cat.id}>{cat.nombre}</option>
+                            ))}
+                          </select>
+                        ) : (
+                          <input
+                            type="text"
+                            value={editArticleForm.category}
+                            onChange={(e) => setEditArticleForm(prev => ({ ...prev, category: e.target.value }))}
+                            placeholder="Ej: Cuadros, Iluminación"
+                            className="w-full bg-white border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs text-slate-800 font-bold focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                          />
+                        )}
+                      </div>
+
+                      {/* Subcategoría */}
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">Subcategoría E-Commerce</label>
+                        {ecomSubcategories.length > 0 ? (
+                          <select
+                            value={editArticleForm.subcategoria_id || ""}
+                            onChange={(e) => {
+                              const selectedId = e.target.value;
+                              const subcatObj = ecomSubcategories.find(s => String(s.id) === String(selectedId));
+                              setEditArticleForm(prev => ({
+                                ...prev,
+                                subcategoria_id: selectedId,
+                                subcategory: subcatObj ? subcatObj.nombre : ""
+                              }));
+                            }}
+                            className="w-full bg-white border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs text-slate-800 font-bold focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                          >
+                            <option value="">-- Seleccionar Subcategoría --</option>
+                            {ecomSubcategories
+                              .filter(sub => !editArticleForm.categoria_id || String(sub.categoria_id) === String(editArticleForm.categoria_id))
+                              .map(sub => (
+                                <option key={sub.id} value={sub.id}>{sub.nombre}</option>
+                              ))}
+                          </select>
+                        ) : (
+                          <input
+                            type="text"
+                            value={editArticleForm.subcategory}
+                            onChange={(e) => setEditArticleForm(prev => ({ ...prev, subcategory: e.target.value }))}
+                            placeholder="Ej: Cuadros Trípticos"
+                            className="w-full bg-white border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs text-slate-800 font-bold focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                          />
+                        )}
+                      </div>
+
+                      {/* Descripción Corta */}
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">Descripción E-Commerce</label>
+                        <input
+                          type="text"
+                          value={editArticleForm.description}
+                          onChange={(e) => setEditArticleForm(prev => ({ ...prev, description: e.target.value }))}
+                          placeholder="Ej: Set de 3 cuadros impresos..."
+                          className="w-full bg-white border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs text-slate-800 font-bold focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                        />
+                      </div>
+
+                      {/* Galería de Imágenes (imagenes) */}
+                      <div className="space-y-1.5 md:col-span-2">
+                        <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">Galería de Imágenes Adicionales (URLs separadas por comas)</label>
+                        <textarea
+                          rows={2}
+                          value={editArticleForm.imagenes}
+                          onChange={(e) => setEditArticleForm(prev => ({ ...prev, imagenes: e.target.value }))}
+                          placeholder="https://ejemplo.com/img1.jpg, https://ejemplo.com/img2.jpg"
+                          className="w-full bg-white border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs text-slate-800 font-bold focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                        />
+                      </div>
+
+                      {/* Variantes en Formato JSON */}
+                      <div className="space-y-1.5 md:col-span-2">
+                        <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">Variantes del Catálogo (Configuración JSON)</label>
+                        <textarea
+                          rows={3}
+                          value={editArticleForm.variants}
+                          onChange={(e) => setEditArticleForm(prev => ({ ...prev, variants: e.target.value }))}
+                          placeholder='[{"attributes":{"talle":"XL","color":"azul"},"stock":5,"price":"1200","barcode":"...","image":"..."}]'
+                          className="w-full bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-1.5 text-[11px] text-slate-700 font-mono focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                        />
+                        <span className="text-[9px] text-slate-400 block font-medium">Especifica talles, colores, stock individual o precio personalizado de forma segura en formato JSON.</span>
+                      </div>
+                    </div>
+
+                    {/* Interruptores / Flags */}
+                    <div className="grid grid-cols-2 gap-2.5 pt-1">
+                      {/* Destacado */}
+                      <label className="flex items-center gap-2 cursor-pointer bg-white border border-slate-200 p-2 rounded-xl hover:bg-slate-100/40 select-none">
+                        <input
+                          type="checkbox"
+                          checked={editArticleForm.featured}
+                          onChange={(e) => setEditArticleForm(prev => ({ ...prev, featured: e.target.checked }))}
+                          className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 h-4 w-4 cursor-pointer"
+                        />
+                        <span className="text-[10px] font-bold text-slate-600 uppercase">Destacado</span>
+                      </label>
+
+                      {/* Pausado */}
+                      <label className="flex items-center gap-2 cursor-pointer bg-white border border-slate-200 p-2 rounded-xl hover:bg-slate-100/40 select-none">
+                        <input
+                          type="checkbox"
+                          checked={editArticleForm.paused}
+                          onChange={(e) => setEditArticleForm(prev => ({ ...prev, paused: e.target.checked }))}
+                          className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 h-4 w-4 cursor-pointer"
+                        />
+                        <span className="text-[10px] font-bold text-slate-600 uppercase">Pausado/No Web</span>
+                      </label>
+
+                      {/* Visual 3D */}
+                      <label className="flex items-center gap-2 cursor-pointer bg-white border border-slate-200 p-2 rounded-xl hover:bg-slate-100/40 select-none">
+                        <input
+                          type="checkbox"
+                          checked={editArticleForm.is_3d}
+                          onChange={(e) => setEditArticleForm(prev => ({ ...prev, is_3d: e.target.checked }))}
+                          className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 h-4 w-4 cursor-pointer"
+                        />
+                        <span className="text-[10px] font-bold text-slate-600 uppercase">Item 3D</span>
+                      </label>
+
+                      {/* Consultar Únicamente */}
+                      <label className="flex items-center gap-2 cursor-pointer bg-white border border-slate-200 p-2 rounded-xl hover:bg-slate-100/40 select-none">
+                        <input
+                          type="checkbox"
+                          checked={editArticleForm.consult_only}
+                          onChange={(e) => setEditArticleForm(prev => ({ ...prev, consult_only: e.target.checked }))}
+                          className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 h-4 w-4 cursor-pointer"
+                        />
+                        <span className="text-[10px] font-bold text-slate-600 uppercase">Solo Consulta</span>
+                      </label>
+                    </div>
+                  </div>
+
                   {/* Tipo de Artículo Switch */}
                   <div className="space-y-1.5">
                     <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Tipo de Artículo</label>
@@ -11069,14 +11388,14 @@ export default function App() {
             </div>
 
             {/* Segmented Type Selector Switch */}
-            <div className="bg-slate-100/80 p-1 rounded-xl grid grid-cols-2 gap-1.5 mb-6 text-center text-xs font-bold font-sans">
+            <div className="bg-slate-100/85 p-1 rounded-xl grid grid-cols-2 gap-1.5 mb-6 text-center text-xs font-bold font-sans">
               <button
                 type="button"
                 onClick={() => setCreationType('simple')}
                 className={`py-2 px-4 rounded-lg transition-all cursor-pointer ${
                   creationType === 'simple'
                     ? 'bg-white text-indigo-700 shadow-sm'
-                    : 'text-slate-600 hover:bg-slate-205/50'
+                    : 'text-slate-600 hover:bg-slate-200/50'
                 }`}
               >
                 Artículo Simple
@@ -11087,7 +11406,7 @@ export default function App() {
                 className={`py-2 px-4 rounded-lg transition-all cursor-pointer ${
                   creationType === 'compuesto'
                     ? 'bg-white text-indigo-700 shadow-sm'
-                    : 'text-slate-600 hover:bg-slate-205/50'
+                    : 'text-slate-600 hover:bg-slate-200/50'
                 }`}
               >
                 Artículo Compuesto (Combo)
@@ -11104,7 +11423,7 @@ export default function App() {
                   </div>
                 )}
                 {articleError && (
-                  <div className="mb-4 p-3 text-red-600 bg-red-50 text-xs rounded-xl font-bold border border-red-200">
+                  <div className="mb-4 p-3 text-red-650 bg-red-50 text-xs rounded-xl font-bold border border-red-200">
                     {articleError}
                   </div>
                 )}
@@ -11128,140 +11447,867 @@ export default function App() {
             {/* FLOW 1: SIMPLE ITEM FORM */}
             {creationType === 'simple' && (
               <form onSubmit={handleCreateArticleSubmit} className="space-y-4">
-                <div className="grid grid-cols-1 md:grid-cols-6 gap-3.5 items-end">
-                  {/* Código / SKU */}
-                  <div className="space-y-1.5 md:col-span-2">
-                    <div className="flex items-center justify-between">
-                      <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Código / SKU</label>
-                      <span className="text-[9px] font-extrabold bg-indigo-50 text-indigo-600 px-1.5 py-0.5 rounded border border-indigo-200 uppercase tracking-wider">Sistema</span>
+                {/* Steps Progress Indicators */}
+                <div className="flex border-b border-slate-100 bg-slate-50/50 p-2 overflow-x-auto gap-1 mb-2.5 rounded-xl">
+                  {[
+                    { step: 1, name: 'Paso 1: Info Básica', icon: '📝' },
+                    { step: 2, name: 'Paso 2: Precios', icon: '💰' },
+                    { step: 3, name: 'Paso 3: Imágenes', icon: '🖼️' },
+                    { step: 4, name: 'Paso 4: Variantes y Control', icon: '🏷️' }
+                  ].map((s) => {
+                    const isActive = newArticleStep === s.step;
+                    const isCompleted = newArticleStep > s.step;
+                    return (
+                      <button
+                        key={`step_tab_${s.step}`}
+                        type="button"
+                        onClick={() => {
+                          setNewArticleStep(s.step);
+                        }}
+                        className={`flex-1 min-w-[145px] flex items-center justify-center gap-1.5 py-2 px-3 text-xs font-bold rounded-xl transition-all cursor-pointer ${
+                          isActive
+                            ? 'bg-indigo-600 text-white shadow-sm border border-indigo-750'
+                            : isCompleted
+                            ? 'bg-emerald-50 text-emerald-850 border border-emerald-110 hover:bg-emerald-100/75'
+                            : 'bg-white text-slate-500 border border-slate-200/60 hover:bg-slate-50/60'
+                        }`}
+                      >
+                        <span>{s.icon}</span>
+                        <span className="truncate">{s.name}</span>
+                        {isCompleted && <Check className="w-3 h-3 text-emerald-600 shrink-0" />}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* Step 1: Info Básica */}
+                {newArticleStep === 1 && (
+                  <div className="space-y-4 animate-fade-in">
+                    <div className="grid grid-cols-1 md:grid-cols-6 gap-3.5 items-end">
+                      {/* Código / SKU */}
+                      <div className="space-y-1.5 md:col-span-2">
+                        <div className="flex items-center justify-between">
+                          <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Código / SKU</label>
+                          <span className="text-[9px] font-extrabold bg-indigo-50 text-indigo-600 px-1.5 py-0.5 rounded border border-indigo-200 uppercase tracking-wider">Sistema</span>
+                        </div>
+                        <input
+                          type="text"
+                          readOnly
+                          value={getNextAvailableSku()}
+                          title="Generado automáticamente por el sistema para evitar repeticiones"
+                          className="w-full bg-slate-100 border border-slate-200 rounded-xl px-3 py-2 text-xs font-mono font-bold text-indigo-600 cursor-not-allowed focus:outline-none"
+                        />
+                      </div>
+
+                      {/* Nombre Input */}
+                      <div className="space-y-1.5 md:col-span-4">
+                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Nombre del Producto (*)</label>
+                        <input
+                          type="text"
+                          required
+                          value={newArticle.nombre}
+                          onChange={(e) => setNewArticle(prev => ({ ...prev, nombre: e.target.value }))}
+                          placeholder="Ej: Funda Neopreno 11 Lisas Rosada"
+                          className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs focus:ring-2 focus:ring-indigo-500 focus:outline-none font-semibold text-slate-800"
+                        />
+                      </div>
                     </div>
-                    <input
-                      type="text"
-                      readOnly
-                      value={getNextAvailableSku()}
-                      title="Generado automáticamente por el sistema para evitar repeticiones"
-                      className="w-full bg-slate-100 border border-slate-200 rounded-xl px-3 py-2 text-xs font-mono font-bold text-indigo-600 cursor-not-allowed focus:outline-none"
-                    />
-                  </div>
 
-                  {/* Nombre Input */}
-                  <div className="space-y-1.5 md:col-span-4">
-                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Nombre del Producto (*)</label>
-                    <input
-                      type="text"
-                      required
-                      value={newArticle.nombre}
-                      onChange={(e) => setNewArticle(prev => ({ ...prev, nombre: e.target.value }))}
-                      placeholder="Ej: Funda Neopreno 11 Lisas Rosada"
-                      className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs focus:ring-2 focus:ring-indigo-500 focus:outline-none font-semibold text-slate-800"
-                    />
-                  </div>
-                </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+                      {/* Categoría */}
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Categoría E-Commerce (*)</label>
+                        {ecomCategories.length > 0 ? (
+                          <select
+                            value={newArticle.categoria_id || ""}
+                            onChange={(e) => {
+                              const selectedId = e.target.value;
+                              const catObj = ecomCategories.find(c => String(c.id) === String(selectedId));
+                              setNewArticle(prev => ({
+                                ...prev,
+                                categoria_id: selectedId,
+                                category: catObj ? catObj.nombre : "",
+                                subcategoria_id: "",
+                                subcategory: ""
+                              }));
+                            }}
+                            className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs focus:ring-2 focus:ring-indigo-500 focus:outline-none font-bold text-slate-800"
+                          >
+                            <option value="">-- Seleccionar Categoría --</option>
+                            {ecomCategories.map(cat => (
+                              <option key={cat.id} value={cat.id}>{cat.nombre}</option>
+                            ))}
+                          </select>
+                        ) : (
+                          <input
+                            type="text"
+                            value={newArticle.category}
+                            onChange={(e) => setNewArticle(prev => ({ ...prev, category: e.target.value }))}
+                            placeholder="Ej: Cuadros, Iluminación, Decoración"
+                            className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs focus:ring-2 focus:ring-indigo-500 focus:outline-none font-bold text-slate-800"
+                          />
+                        )}
+                      </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5 items-end">
-                  {/* Compra Costo */}
-                  <div className="space-y-1.5">
-                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Precio Compra ($) (*)</label>
-                    <input
-                      type="number"
-                      min="0"
-                      required
-                      value={newArticle.costo}
-                      onChange={(e) => {
-                        const v = e.target.value;
-                        const num = Number(v || 0);
-                        const calculated40 = num > 0 ? (num * 1.4).toFixed(0) : '';
-                        setNewArticle(prev => ({
-                          ...prev,
-                          costo: v,
-                          precio_venta: calculated40,
-                          precio_venta_ml: prev.precio_venta_ml === '' || prev.precio_venta_ml === (Number(prev.costo) * 1.4).toFixed(0) ? calculated40 : prev.precio_venta_ml
-                        }));
-                      }}
-                      placeholder="0"
-                      className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs focus:ring-2 focus:ring-indigo-500 focus:outline-none font-bold text-slate-900 font-mono"
-                    />
-                  </div>
+                      {/* Subcategoría */}
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Subcategoría E-Commerce</label>
+                        {ecomSubcategories.length > 0 ? (
+                          <select
+                            value={newArticle.subcategoria_id || ""}
+                            onChange={(e) => {
+                              const selectedId = e.target.value;
+                              const subcatObj = ecomSubcategories.find(s => String(s.id) === String(selectedId));
+                              setNewArticle(prev => ({
+                                ...prev,
+                                subcategoria_id: selectedId,
+                                subcategory: subcatObj ? subcatObj.nombre : ""
+                              }));
+                            }}
+                            className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs focus:ring-2 focus:ring-indigo-500 focus:outline-none font-bold text-slate-800"
+                          >
+                            <option value="">-- Seleccionar Subcategoría --</option>
+                            {ecomSubcategories
+                              .filter(sub => !newArticle.categoria_id || String(sub.categoria_id) === String(newArticle.categoria_id))
+                              .map(sub => (
+                                <option key={sub.id} value={sub.id}>{sub.nombre}</option>
+                              ))}
+                          </select>
+                        ) : (
+                          <input
+                            type="text"
+                            value={newArticle.subcategory}
+                            onChange={(e) => setNewArticle(prev => ({ ...prev, subcategory: e.target.value }))}
+                            placeholder="Ej: Cuadros Trípticos, Veladores"
+                            className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs focus:ring-2 focus:ring-indigo-500 focus:outline-none font-bold text-slate-800"
+                          />
+                        )}
+                      </div>
+                    </div>
 
-                  {/* SUGGESTED 40% Display and override */}
-                  <div className="space-y-1.5">
-                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Venta General ($)</label>
-                    <input
-                      type="number"
-                      disabled
-                      value={calculatedWebFaceInstaPrice > 0 ? Math.round(calculatedWebFaceInstaPrice) : 0}
-                      className="w-full bg-emerald-50 border border-emerald-200 rounded-xl px-3 py-2 text-xs font-bold text-emerald-800 font-mono cursor-not-allowed"
-                      title="Calculado automáticamente: Venta ML - Comisión ML"
-                    />
-                  </div>
+                    {/* Categorías Adicionales / Secundarias */}
+                    <div className="space-y-2">
+                      <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Categorías Adicionales / Secundarias (las seleccionadas se marcan en la web)</label>
+                      <div className="flex flex-wrap gap-2">
+                        {['Informática', 'Ropa', 'Hogar', 'Gamer', 'Personalizados'].map(tag => {
+                          const isSelected = newArticle.description.includes(`[Tag: ${tag}]`);
+                          return (
+                            <button
+                              type="button"
+                              key={`sec_category_${tag}`}
+                              onClick={() => {
+                                setNewArticle(prev => {
+                                  let currentDesc = prev.description || "";
+                                  if (isSelected) {
+                                    currentDesc = currentDesc.replace(`[Tag: ${tag}]`, '').trim();
+                                  } else {
+                                    currentDesc = `${currentDesc} [Tag: ${tag}]`.trim();
+                                  }
+                                  return { ...prev, description: currentDesc };
+                                });
+                              }}
+                              className={`px-3 py-1.5 text-xs font-bold rounded-xl border transition-all cursor-pointer ${
+                                isSelected
+                                  ? 'bg-indigo-600 text-white border-indigo-700 shadow-sm'
+                                  : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100'
+                              }`}
+                            >
+                              {tag}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
 
-                  {/* Comision ML input */}
-                  <div className="space-y-1.5">
-                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Comisión ML ($)</label>
-                    <input
-                      type="number"
-                      min="0"
-                      value={newArticle.comision_ml}
-                      onChange={(e) => setNewArticle(prev => ({ ...prev, comision_ml: e.target.value }))}
-                      placeholder="11"
-                      className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs focus:ring-2 focus:ring-indigo-500 focus:outline-none font-bold text-slate-755 font-mono"
-                    />
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5 items-end">
-                  {/* Precio Venta ML */}
-                  <div className="space-y-1.5">
-                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Precio Venta ML ($)</label>
-                    <input
-                      type="number"
-                      min="0"
-                      value={newArticle.precio_venta_ml}
-                      onChange={(e) => setNewArticle(prev => ({ ...prev, precio_venta_ml: e.target.value }))}
-                      placeholder={newArticle.precio_venta || suggested40}
-                      className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs focus:ring-2 focus:ring-indigo-500 focus:outline-none font-bold text-indigo-950 font-mono"
-                    />
-                  </div>
-
-                  {/* Precio Web/Face/Insta Display (Venta ML - Comisión ML) */}
-                  <div className="space-y-1.5">
-                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Precio web / Face / insta ($)</label>
-                    <div className="bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-xl px-3 py-1.5 flex items-center justify-between min-h-[38px]">
-                      <span className="text-[9px] font-bold uppercase text-emerald-600">Neto (Venta ML - Comis)</span>
-                      <span className="font-mono font-extrabold text-sm text-emerald-700">
-                        ${calculatedWebFaceInstaPrice.toLocaleString('es-UY', { maximumFractionDigits: 1 })}
-                      </span>
+                    {/* Descripción Corta */}
+                    <div className="space-y-1.5">
+                      <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">Descripción E-Commerce</label>
+                      <input
+                        type="text"
+                        value={newArticle.description}
+                        onChange={(e) => setNewArticle(prev => ({ ...prev, description: e.target.value }))}
+                        placeholder="Ej: Set de 3 cuadros impresos en alta definición..."
+                        className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs focus:ring-2 focus:ring-indigo-500 focus:outline-none font-bold text-slate-800"
+                      />
                     </div>
                   </div>
+                )}
 
-                  {/* Image URL input */}
-                  <div className="space-y-1.5">
-                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">URL Imagen del Producto (Opcional)</label>
-                    <input
-                      type="url"
-                      value={newArticle.imagen_url}
-                      onChange={(e) => setNewArticle(prev => ({ ...prev, imagen_url: e.target.value }))}
-                      placeholder="https://images.unsplash.com/... enlace de foto"
-                      className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs focus:ring-2 focus:ring-indigo-500 focus:outline-none font-semibold text-slate-800"
-                    />
+                {/* Step 2: Precios */}
+                {newArticleStep === 2 && (
+                  <div className="space-y-4 animate-fade-in">
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5 items-end">
+                      {/* Compra Costo */}
+                      <div className="space-y-1.5 font-sans">
+                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Precio Compra ($) (*)</label>
+                        <input
+                          type="number"
+                          min="0"
+                          required
+                          value={newArticle.costo}
+                          onChange={(e) => {
+                            const v = e.target.value;
+                            const num = Number(v || 0);
+                            const calculated40 = num > 0 ? (num * 1.4).toFixed(0) : '';
+                            setNewArticle(prev => ({
+                              ...prev,
+                              costo: v,
+                              precio_venta: calculated40,
+                              precio_venta_ml: prev.precio_venta_ml === '' || prev.precio_venta_ml === (Number(prev.costo) * 1.4).toFixed(0) ? calculated40 : prev.precio_venta_ml
+                            }));
+                          }}
+                          placeholder="0"
+                          className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs focus:ring-2 focus:ring-indigo-500 focus:outline-none font-bold text-slate-900 font-mono"
+                        />
+                      </div>
+
+                      {/* SUGGESTED 40% Display and override */}
+                      <div className="space-y-1.5 font-sans">
+                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Venta General o Sugerido (+40%)</label>
+                        <input
+                          type="number"
+                          disabled
+                          value={calculatedWebFaceInstaPrice > 0 ? Math.round(calculatedWebFaceInstaPrice) : 0}
+                          className="w-full bg-emerald-50 border border-emerald-250 rounded-xl px-3 py-2 text-xs font-bold text-emerald-800 font-mono cursor-not-allowed"
+                          title="Calculado automáticamente: Venta ML - Comisión ML"
+                        />
+                      </div>
+
+                      {/* Comision ML input */}
+                      <div className="space-y-1.5 font-sans">
+                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Comisión ML ($)</label>
+                        <input
+                          type="number"
+                          min="0"
+                          value={newArticle.comision_ml}
+                          onChange={(e) => setNewArticle(prev => ({ ...prev, comision_ml: e.target.value }))}
+                          placeholder="11"
+                          className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs focus:ring-2 focus:ring-indigo-500 focus:outline-none font-bold text-slate-755 font-mono"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5 items-end">
+                      {/* Precio Venta ML */}
+                      <div className="space-y-1.5 font-sans">
+                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Precio Venta ML ($)</label>
+                        <input
+                          type="number"
+                          min="0"
+                          value={newArticle.precio_venta_ml}
+                          onChange={(e) => setNewArticle(prev => ({ ...prev, precio_venta_ml: e.target.value }))}
+                          placeholder={newArticle.precio_venta || "0"}
+                          className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs focus:ring-2 focus:ring-indigo-500 focus:outline-none font-bold text-indigo-950 font-mono"
+                        />
+                      </div>
+
+                      {/* Precio Original (para Ofertas) */}
+                      <div className="space-y-1.5 font-sans">
+                        <label className="text-[10px] font-bold text-slate-505 uppercase tracking-wider block">Precio Original o Tachado ($)</label>
+                        <input
+                          type="number"
+                          min="0"
+                          value={newArticle.original_price}
+                          onChange={(e) => setNewArticle(prev => ({ ...prev, original_price: e.target.value }))}
+                          placeholder="Ej: 1890 (Tachado)"
+                          className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs focus:ring-2 focus:ring-indigo-500 focus:outline-none font-bold text-slate-800 font-mono"
+                        />
+                      </div>
+
+                      {/* Precio Web/Face/Insta Display (Venta ML - Comisión ML) */}
+                      <div className="space-y-1.5 font-sans">
+                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Precio web / Face / insta ($)</label>
+                        <div className="bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-xl px-3 py-1.5 flex items-center justify-between min-h-[38px]">
+                          <span className="text-[9px] font-bold uppercase text-emerald-600">Neto (Neto Web)</span>
+                          <span className="font-mono font-extrabold text-sm text-emerald-700">
+                            ${calculatedWebFaceInstaPrice.toLocaleString('es-UY', { maximumFractionDigits: 1 })}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
                   </div>
-                </div>
+                )}
 
-                <div className="flex justify-end gap-3 pt-4 border-t border-slate-100 mt-5">
+                {/* Step 3: Imágenes */}
+                {newArticleStep === 3 && (
+                  <div className="space-y-4 animate-fade-in font-sans">
+                    <div className="bg-slate-50 border border-slate-200/60 rounded-2xl p-4.5 space-y-4">
+                      <div className="flex items-center justify-between border-b border-slate-200/60 pb-2">
+                        <div>
+                          <h4 className="text-xs font-bold text-slate-800">Galería Fotográfica del Producto</h4>
+                          <p className="text-[10px] text-slate-400">Configura la foto de portada de tu e-commerce y fotos complementarias</p>
+                        </div>
+                        <span className="text-[9px] font-bold bg-indigo-55 text-indigo-600 px-2 py-0.5 rounded border border-indigo-110">INTEGRACIÓN</span>
+                      </div>
+
+                      {/* Inputs Manuales */}
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+                        <div className="space-y-1.5">
+                          <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">URL Foto Portada (Principal *)</label>
+                          <input
+                            type="url"
+                            value={newArticle.imagen_url}
+                            onChange={(e) => setNewArticle(prev => ({ ...prev, imagen_url: e.target.value }))}
+                            placeholder="https://images.unsplash.com/..."
+                            className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs focus:ring-2 focus:ring-indigo-500 focus:outline-none font-medium text-slate-800"
+                          />
+                        </div>
+                        <div className="space-y-1.5">
+                          <label className="text-[10px] font-bold text-slate-505 uppercase tracking-wider block">Fotos Secundarias (URLs separadas por coma)</label>
+                          <input
+                            type="text"
+                            value={newArticle.imagenes}
+                            onChange={(e) => setNewArticle(prev => ({ ...prev, imagenes: e.target.value }))}
+                            placeholder="https://img1.jpg, https://img2.jpg"
+                            className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs focus:ring-2 focus:ring-indigo-500 focus:outline-none font-medium text-slate-800"
+                          />
+                        </div>
+                      </div>
+
+                      {/* Stock Preset Picker */}
+                      <div className="space-y-2">
+                        <span className="text-[9.5px] font-extrabold text-slate-450 uppercase tracking-wide block">💡 Fotos Rápidas desde ERP Stock para Pruebas:</span>
+                        <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5">
+                          {[
+                            { name: 'Remera Lino Ligt', url: 'https://images.unsplash.com/photo-1596755094514-f87e34085b2c?auto=format&fit=crop&w=400&q=80' },
+                            { name: 'Remera Cotton Negra', url: 'https://images.unsplash.com/photo-1521572267360-ee0c2909d518?auto=format&fit=crop&w=400&q=80' },
+                            { name: 'Buso Oversize Ash', url: 'https://images.unsplash.com/photo-1556821840-3a63f95609a7?auto=format&fit=crop&w=400&q=80' },
+                            { name: 'Jeans Blue Denim', url: 'https://images.unsplash.com/photo-1542272604-787c3835535d?auto=format&fit=crop&w=400&q=80' },
+                            { name: 'Gorra Urban Dark', url: 'https://images.unsplash.com/photo-1534215754734-18e55d13ce35?auto=format&fit=crop&w=400&q=80' }
+                          ].map((photo, pIdx) => (
+                            <button
+                              type="button"
+                              key={`preset_photo_${pIdx}`}
+                              onClick={() => {
+                                if (!newArticle.imagen_url) {
+                                  setNewArticle(prev => ({ ...prev, imagen_url: photo.url }));
+                                } else {
+                                  const secList = newArticle.imagenes ? newArticle.imagenes.split(',').map(x => x.trim()).filter(Boolean) : [];
+                                  if (!secList.includes(photo.url)) {
+                                    secList.push(photo.url);
+                                    setNewArticle(prev => ({ ...prev, imagenes: secList.join(', ') }));
+                                  }
+                                }
+                              }}
+                              className="group relative h-16 rounded-xl overflow-hidden border border-slate-205 cursor-pointer bg-white scale-100 hover:scale-[1.03] transition-all"
+                            >
+                              <img src={photo.url} alt={photo.name} referrerPolicy="no-referrer" className="w-full h-full object-cover" />
+                              <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                                <span className="text-[8px] font-bold text-white uppercase text-center px-1">Añadir</span>
+                              </div>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Drag and Drop o click zone */}
+                      <div
+                        onClick={() => {
+                          // Simulate drag and drop / local upload by injecting a beautiful high quality picture of clothing
+                          const randomPhotos = [
+                            'https://images.unsplash.com/photo-1578587018452-892bacefd3f2?auto=format&fit=crop&w=400&q=80',
+                            'https://images.unsplash.com/photo-1539109136881-3be0616acf4b?auto=format&fit=crop&w=400&q=80',
+                            'https://images.unsplash.com/photo-1434389677669-e08b4cac3105?auto=format&fit=crop&w=400&q=80',
+                            'https://images.unsplash.com/photo-1620799140408-edc6dcb6d633?auto=format&fit=crop&w=400&q=80'
+                          ];
+                          const randomUrl = randomPhotos[Math.floor(Math.random() * randomPhotos.length)];
+                          if (!newArticle.imagen_url) {
+                            setNewArticle(prev => ({ ...prev, imagen_url: randomUrl }));
+                          } else {
+                            const secList = prev => prev.imagenes ? prev.imagenes.split(',').map(x => x.trim()).filter(Boolean) : [];
+                            setNewArticle(prev => {
+                              const list = prev.imagenes ? prev.imagenes.split(',').map(x => x.trim()).filter(Boolean) : [];
+                              if (!list.includes(randomUrl)) list.push(randomUrl);
+                              return { ...prev, imagenes: list.join(', ') };
+                            });
+                          }
+                        }}
+                        className="border-2 border-dashed border-slate-200 rounded-xl p-4.5 text-center bg-slate-50/50 hover:bg-slate-100/40 cursor-pointer transition-colors group"
+                      >
+                        <span className="text-xl block mb-1">☁️</span>
+                        <span className="text-xs font-bold text-slate-600 block group-hover:text-indigo-600 transition-colors">Arrastra fotos aquí o haz clic para subir</span>
+                        <span className="text-[9px] text-slate-400 block mt-0.5">Soporta JPG, PNG de stock en simultáneo (Simulación dinámica)</span>
+                      </div>
+
+                      {/* Interactive Live Gallery previews */}
+                      {(() => {
+                        const prim = newArticle.imagen_url;
+                        const secs = newArticle.imagenes ? newArticle.imagenes.split(',').map(u => u.trim()).filter(Boolean) : [];
+                        const totalCount = (prim ? 1 : 0) + secs.length;
+
+                        if (totalCount === 0) {
+                          return (
+                            <div className="text-center py-4 text-slate-400 text-xs font-medium bg-white rounded-xl border border-dashed border-slate-200">
+                              No hay ninguna foto asociada al artículo todavía.
+                            </div>
+                          );
+                        }
+
+                        return (
+                          <div className="space-y-2 mt-1">
+                            <span className="text-[10px] font-bold text-slate-600 block uppercase tracking-wide">Previsualización Activa de Fotos ({totalCount}):</span>
+                            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                              {/* Portada Principal */}
+                              {prim && (
+                                <div className="border-2 border-indigo-500 rounded-xl overflow-hidden bg-white relative group h-28 shadow-sm">
+                                  <img src={prim} alt="Principal" referrerPolicy="no-referrer" className="w-full h-full object-cover" />
+                                  <span className="absolute top-1.5 left-1.5 bg-indigo-650 text-white font-extrabold text-[8px] uppercase px-1.5 py-0.5 rounded shadow-sm">Portada principal</span>
+                                  <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-all p-1 gap-1">
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setNewArticle(prev => {
+                                          let secList = prev.imagenes ? prev.imagenes.split(',').map(x => x.trim()).filter(Boolean) : [];
+                                          const nextPrim = secList.shift() || '';
+                                          return {
+                                            ...prev,
+                                            imagen_url: nextPrim,
+                                            imagenes: secList.join(', ')
+                                          };
+                                        });
+                                      }}
+                                      className="bg-red-500 hover:bg-red-600 text-white font-bold text-[9px] py-1 px-2 rounded-lg cursor-pointer transition-colors"
+                                    >
+                                      Eliminar
+                                    </button>
+                                  </div>
+                                </div>
+                              )}
+
+                              {/* Secundarias */}
+                              {secs.map((sec, sIdx) => (
+                                <div key={`sec_gallery_item_${sIdx}`} className="border border-slate-200 rounded-xl overflow-hidden bg-white relative group h-28">
+                                  <img src={sec} alt={`Secundaria ${sIdx}`} referrerPolicy="no-referrer" className="w-full h-full object-cover" />
+                                  <span className="absolute top-1.5 left-1.5 bg-slate-700 text-white font-bold text-[8px] uppercase px-1.5 py-0.5 rounded shadow-sm">Galería</span>
+                                  <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 flex flex-col items-center justify-center transition-all p-1 gap-1.5">
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setNewArticle(prev => {
+                                          const oldPrim = prev.imagen_url;
+                                          const currentSecs = prev.imagenes ? prev.imagenes.split(',').map(x => x.trim()).filter(Boolean) : [];
+                                          const filteredSecs = currentSecs.filter(u => u !== sec);
+                                          if (oldPrim) {
+                                            filteredSecs.push(oldPrim);
+                                          }
+                                          return {
+                                            ...prev,
+                                            imagen_url: sec,
+                                            imagenes: filteredSecs.join(', ')
+                                          };
+                                        });
+                                      }}
+                                      className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-[8px] py-1 px-2 rounded-lg cursor-pointer transition-colors w-[85%] text-center uppercase"
+                                    >
+                                      Destacar Portada
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setNewArticle(prev => {
+                                          const currentSecs = prev.imagenes ? prev.imagenes.split(',').map(x => x.trim()).filter(Boolean) : [];
+                                          const filteredSecs = currentSecs.filter(u => u !== sec);
+                                          return {
+                                            ...prev,
+                                            imagenes: filteredSecs.join(', ')
+                                          };
+                                        });
+                                      }}
+                                      className="bg-red-500 hover:bg-red-650 text-white font-bold text-[8px] py-0.5 px-2 rounded-lg cursor-pointer transition-colors w-[85%] text-center uppercase"
+                                    >
+                                      Eliminar
+                                    </button>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        );
+                      })()}
+                    </div>
+                  </div>
+                )}
+
+                {/* Step 4: Variantes y Control */}
+                {newArticleStep === 4 && (
+                  <div className="space-y-4 animate-fade-in font-sans">
+                    {/* Visual Variant Builder Card */}
+                    <div className="bg-slate-50 border border-slate-200/60 p-4 rounded-2xl space-y-4">
+                      <div className="flex justify-between items-center border-b border-slate-100 pb-2.5">
+                        <div>
+                          <h4 className="text-xs font-bold text-slate-805">Creador de Variantes Inteligentes</h4>
+                          <p className="text-[10px] text-slate-400">Genera talles y colores emparejados con SKU independiente</p>
+                        </div>
+                        <span className="text-[9px] font-extrabold bg-emerald-50 text-emerald-700 border border-emerald-100 px-2 py-0.5 rounded">E-COMMERCE</span>
+                      </div>
+
+                      {/* Variant Presets */}
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pb-2.5">
+                        {/* Talles */}
+                        <div className="space-y-1.5">
+                          <label className="text-[10px] font-extrabold text-slate-550 uppercase tracking-widest block">Talles Comunes:</label>
+                          <div className="flex flex-wrap gap-1.5">
+                            {['S', 'M', 'L', 'XL', 'XXL', 'Único'].map((sPreset) => {
+                              const isSelected = varSize === sPreset;
+                              return (
+                                <button
+                                  type="button"
+                                  key={`b_sz_preset_${sPreset}`}
+                                  onClick={() => {
+                                    setVarSize(sPreset);
+                                    setVarSku(`${newArticle.codigo || getNextAvailableSku()}-${sPreset}`);
+                                  }}
+                                  className={`px-2.5 py-1 text-[11px] font-bold rounded-lg border transition-all cursor-pointer ${
+                                    isSelected
+                                      ? 'bg-indigo-650 text-white border-indigo-750 shadow-sm'
+                                      : 'bg-white text-slate-650 hover:bg-slate-100/60 border-slate-200/65'
+                                  }`}
+                                >
+                                  {sPreset}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+
+                        {/* Colores */}
+                        <div className="space-y-1.5">
+                          <label className="text-[10px] font-extrabold text-slate-550 uppercase tracking-widest block">Colores Comunes:</label>
+                          <div className="flex flex-wrap gap-1.5">
+                            {[
+                              { label: 'Rosa', hex: '#FFC0CB' },
+                              { label: 'Negro', hex: '#000000' },
+                              { label: 'Azul', hex: '#0000FF' },
+                              { label: 'Blanco', hex: '#FFFFFF' },
+                              { label: 'Gris', hex: '#808080' },
+                              { label: 'Verde', hex: '#008000' }
+                            ].map((cPreset) => {
+                              const isSelected = varColor === cPreset.label;
+                              return (
+                                <button
+                                  type="button"
+                                  key={`b_col_preset_${cPreset.label}`}
+                                  onClick={() => {
+                                    setVarColor(cPreset.label);
+                                    setVarColorCode(cPreset.hex);
+                                  }}
+                                  className={`px-2.5 py-1 text-[11px] font-bold rounded-lg border transition-all cursor-pointer flex items-center gap-1 ${
+                                    isSelected
+                                      ? 'bg-indigo-650 text-white border-indigo-750 shadow-sm'
+                                      : 'bg-white text-slate-650 hover:bg-slate-100/60 border-slate-200/65'
+                                  }`}
+                                >
+                                  <span className="w-2 h-2 rounded-full border border-slate-350" style={{ backgroundColor: cPreset.hex }}></span>
+                                  <span>{cPreset.label}</span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Manual input for adding the variants */}
+                      <div className="grid grid-cols-2 md:grid-cols-5 gap-2 items-end bg-white p-3 rounded-xl border border-slate-200">
+                        <div className="space-y-1">
+                          <span className="text-[9px] font-bold text-slate-450 uppercase block">Talle</span>
+                          <input
+                            type="text"
+                            value={varSize}
+                            onChange={(e) => setVarSize(e.target.value)}
+                            placeholder="Ej: M"
+                            className="w-full bg-slate-50 border border-slate-200 rounded-lg px-2 py-1 text-xs text-slate-800 font-bold"
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <span className="text-[9px] font-bold text-slate-450 uppercase block">Color</span>
+                          <input
+                            type="text"
+                            value={varColor}
+                            onChange={(e) => setVarColor(e.target.value)}
+                            placeholder="Ej: Negro"
+                            className="w-full bg-slate-50 border border-slate-200 rounded-lg px-2 py-1 text-xs text-slate-800 font-bold"
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <span className="text-[9px] font-bold text-slate-450 uppercase block">Stock</span>
+                          <input
+                            type="number"
+                            min="0"
+                            value={varStock}
+                            onChange={(e) => setVarStock(e.target.value)}
+                            className="w-full bg-slate-50 border border-slate-200 rounded-lg px-2 py-1 text-xs text-slate-800 font-mono text-center font-bold"
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <span className="text-[9px] font-bold text-slate-450 uppercase block">SKU Variante</span>
+                          <input
+                            type="text"
+                            value={varSku}
+                            onChange={(e) => setVarSku(e.target.value)}
+                            placeholder="SKU"
+                            className="w-full bg-slate-50 border border-slate-200 rounded-lg px-2 py-1 text-xs text-slate-755 font-mono text-center"
+                          />
+                        </div>
+                        <div className="col-span-2 md:col-span-1">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const sz = varSize.trim() || 'Único';
+                              const col = varColor.trim() || 'Base';
+                              const stockNum = Number(varStock || 0);
+                              const computedSku = varSku.trim() || `${newArticle.codigo || getNextAvailableSku()}-${sz}`;
+                              
+                              try {
+                                let list = JSON.parse(newArticle.variants || '[]');
+                                // Check if variant already exists
+                                const duplicate = list.some((v: any) => v.attributes?.talle === sz && v.attributes?.color === col);
+                                if (duplicate) {
+                                  alert('Esta variante ya existe en la lista.');
+                                  return;
+                                }
+                                list.push({
+                                  attributes: {
+                                    talle: sz,
+                                    color: col,
+                                    ...(varColorCode ? { colorCode: varColorCode } : {})
+                                  },
+                                  stock: stockNum,
+                                  price: String(Math.round(calculatedWebFaceInstaPrice) || '0'),
+                                  sku: computedSku
+                                });
+                                setNewArticle(prev => ({ ...prev, variants: JSON.stringify(list, null, 2) }));
+                                // Reset fields
+                                setVarSize('');
+                                setVarColor('');
+                                setVarColorCode('');
+                                setVarStock('10');
+                                setVarSku('');
+                              } catch (err) {
+                                alert('Error al procesar el JSON de variantes');
+                              }
+                            }}
+                            className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold text-[10px] py-1.5 rounded-lg cursor-pointer transition-colors uppercase text-center"
+                          >
+                            + Guardar
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Active Grid Variant Table Manager */}
+                      {(() => {
+                        try {
+                          const parsedList = JSON.parse(newArticle.variants || '[]');
+                          if (parsedList.length === 0) {
+                            return (
+                              <div className="text-center py-5 bg-white rounded-xl border border-dashed border-slate-200 text-slate-400 text-xs">
+                                No hay variantes agregadas. Usa el creador para añadir variantes o haz clic en los presets.
+                              </div>
+                            );
+                          }
+
+                          return (
+                            <div className="bg-white rounded-xl border border-slate-200 overflow-hidden mt-1">
+                              <div className="bg-slate-100/70 p-2 text-[9px] font-extrabold uppercase tracking-wide text-slate-500 border-b border-slate-200 grid grid-cols-12 text-center">
+                                <span className="col-span-3 text-left pl-2">Variante</span>
+                                <span className="col-span-3">SKU Integrable</span>
+                                <span className="col-span-2">Stock</span>
+                                <span className="col-span-2">Precio ($)</span>
+                                <span className="col-span-2">Borrar</span>
+                              </div>
+                              <div className="divide-y divide-slate-100 max-h-[190px] overflow-y-auto">
+                                {parsedList.map((variant: any, idx: number) => (
+                                  <div key={`variant_item_${idx}`} className="p-2 text-xs grid grid-cols-12 items-center text-center hover:bg-slate-50/50">
+                                    <div className="col-span-3 text-left pl-2 font-bold text-slate-700 flex items-center gap-1.5">
+                                      {variant.attributes?.colorCode && (
+                                        <span className="w-2.5 h-2.5 rounded-full border border-slate-300 shrink-0" style={{ backgroundColor: variant.attributes.colorCode }}></span>
+                                      )}
+                                      <span className="truncate">{variant.attributes?.talle || 'U'} / {variant.attributes?.color || 'Base'}</span>
+                                    </div>
+                                    <div className="col-span-3">
+                                      <input
+                                        type="text"
+                                        value={variant.sku || ''}
+                                        onChange={(e) => {
+                                          const val = e.target.value;
+                                          try {
+                                            const current = JSON.parse(newArticle.variants || '[]');
+                                            current[idx].sku = val;
+                                            setNewArticle(prev => ({ ...prev, variants: JSON.stringify(current, null, 2) }));
+                                          } catch (err) {}
+                                        }}
+                                        className="w-[90%] mx-auto bg-slate-50 text-slate-700 text-[10px] font-mono border border-slate-200 rounded px-1 py-0.5 text-center"
+                                      />
+                                    </div>
+                                    <div className="col-span-2">
+                                      <input
+                                        type="number"
+                                        value={variant.stock || 0}
+                                        onChange={(e) => {
+                                          const val = Number(e.target.value || 0);
+                                          try {
+                                            const current = JSON.parse(newArticle.variants || '[]');
+                                            current[idx].stock = val;
+                                            setNewArticle(prev => ({ ...prev, variants: JSON.stringify(current, null, 2) }));
+                                          } catch (err) {}
+                                        }}
+                                        className="w-[70%] mx-auto bg-slate-50 text-slate-750 font-mono border border-slate-200 rounded px-1 py-0.5 text-center"
+                                      />
+                                    </div>
+                                    <div className="col-span-2">
+                                      <input
+                                        type="number"
+                                        value={variant.price || 0}
+                                        onChange={(e) => {
+                                          const val = String(e.target.value || 0);
+                                          try {
+                                            const current = JSON.parse(newArticle.variants || '[]');
+                                            current[idx].price = val;
+                                            setNewArticle(prev => ({ ...prev, variants: JSON.stringify(current, null, 2) }));
+                                          } catch (err) {}
+                                        }}
+                                        className="w-[80%] mx-auto bg-emerald-50/60 font-mono border border-emerald-150 rounded px-1 py-0.5 text-center text-emerald-850 font-bold"
+                                      />
+                                    </div>
+                                    <div className="col-span-2">
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          try {
+                                            const current = JSON.parse(newArticle.variants || '[]');
+                                            const filtered = current.filter((_: any, sIdx: number) => sIdx !== idx);
+                                            setNewArticle(prev => ({ ...prev, variants: JSON.stringify(filtered, null, 2) }));
+                                          } catch (err) {}
+                                        }}
+                                        className="text-red-500 hover:text-red-700 cursor-pointer font-bold text-[10px]"
+                                      >
+                                        🗑️
+                                      </button>
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          );
+                        } catch (e) {
+                          return (
+                            <div className="p-3.5 bg-red-50 border border-red-200 rounded-xl text-red-650 text-xs font-mono">
+                              ⚠️ JSON de variante inválido. Corrige el código en el editor avanzado de abajo.
+                            </div>
+                          );
+                        }
+                      })()}
+
+                      {/* Advanced JSON Editor Collapse Area */}
+                      <details className="text-slate-500 group border border-slate-200 bg-white p-2.5 rounded-xl cursor-default">
+                        <summary className="text-[10px] font-bold uppercase tracking-wider cursor-pointer list-none flex items-center justify-between select-none">
+                          <span>🛠️ Editor Avanzado JSON de la IA / ERP</span>
+                          <span className="text-xs group-open:rotate-180 transition-transform">▼</span>
+                        </summary>
+                        <div className="space-y-1.5 pt-2">
+                          <textarea
+                            rows={3}
+                            value={newArticle.variants}
+                            onChange={(e) => setNewArticle(prev => ({ ...prev, variants: e.target.value }))}
+                            placeholder="[]"
+                            className="w-full bg-slate-900 text-emerald-400 border border-slate-950 rounded-xl p-2 text-[10px] font-mono focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                          />
+                        </div>
+                      </details>
+                    </div>
+
+                    {/* Enablement Option Badged Switches */}
+                    <div className="bg-white border border-slate-200 p-4.5 rounded-2xl space-y-3.5 text-slate-800">
+                      <span className="text-[10px] font-extrabold text-slate-450 uppercase block tracking-wider">Habilitaciones para la Web Tienda (ERP Live Status):</span>
+                      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                        {/* Destacado */}
+                        <label className="flex items-center gap-2 cursor-pointer bg-slate-50 border border-slate-200 p-2.5 rounded-xl hover:bg-slate-100/40 select-none">
+                          <input
+                            type="checkbox"
+                            checked={newArticle.featured}
+                            onChange={(e) => setNewArticle(prev => ({ ...prev, featured: e.target.checked }))}
+                            className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 h-4 w-4 cursor-pointer"
+                          />
+                          <span className="text-[11px] font-bold text-slate-650 uppercase">Destacado</span>
+                        </label>
+
+                        {/* Pausado */}
+                        <label className="flex items-center gap-2 cursor-pointer bg-slate-50 border border-slate-200 p-2.5 rounded-xl hover:bg-slate-100/40 select-none">
+                          <input
+                            type="checkbox"
+                            checked={newArticle.paused}
+                            onChange={(e) => setNewArticle(prev => ({ ...prev, paused: e.target.checked }))}
+                            className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 h-4 w-4 cursor-pointer"
+                          />
+                          <span className="text-[11px] font-bold text-slate-650 uppercase">Pausar Web</span>
+                        </label>
+
+                        {/* Visual 3D */}
+                        <label className="flex items-center gap-2 cursor-pointer bg-slate-50 border border-slate-200 p-2.5 rounded-xl hover:bg-slate-100/40 select-none">
+                          <input
+                            type="checkbox"
+                            checked={newArticle.is_3d}
+                            onChange={(e) => setNewArticle(prev => ({ ...prev, is_3d: e.target.checked }))}
+                            className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 h-4 w-4 cursor-pointer"
+                          />
+                          <span className="text-[11px] font-bold text-slate-650 uppercase">Visual 3D</span>
+                        </label>
+
+                        {/* Consultar Únicamente */}
+                        <label className="flex items-center gap-2 cursor-pointer bg-slate-50 border border-slate-200 p-2.5 rounded-xl hover:bg-slate-100/40 select-none">
+                          <input
+                            type="checkbox"
+                            checked={newArticle.consult_only}
+                            onChange={(e) => setNewArticle(prev => ({ ...prev, consult_only: e.target.checked }))}
+                            className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 h-4 w-4 cursor-pointer"
+                          />
+                          <span className="text-[11px] font-bold text-slate-650 uppercase">Solo Consulta</span>
+                        </label>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Wizard Footer Controls */}
+                <div className="flex justify-between gap-3 pt-4 border-t border-slate-100 mt-5">
                   <button
                     type="button"
-                    onClick={() => setIsCreateModalOpen(false)}
+                    onClick={() => {
+                      if (newArticleStep > 1) {
+                        setNewArticleStep(prev => prev - 1);
+                      } else {
+                        setIsCreateModalOpen(false);
+                      }
+                    }}
                     className="px-4.5 py-2.5 border border-slate-200 rounded-xl text-slate-750 font-bold hover:bg-slate-50 cursor-pointer text-xs"
                   >
-                    Cerrar
+                    {newArticleStep > 1 ? 'Anterior' : 'Cerrar'}
                   </button>
-                  <button
-                    type="submit"
-                    className="bg-gradient-to-r from-indigo-600 to-indigo-700 hover:from-indigo-700 hover:to-indigo-800 text-white font-extrabold text-xs py-2.5 px-6 rounded-xl shadow-md cursor-pointer transition-all flex items-center justify-center gap-2 uppercase tracking-wide"
-                  >
-                    <Plus className="w-4 h-4" />
-                    <span>Crear Artículo Simple</span>
-                  </button>
+
+                  <div className="flex gap-2.5">
+                    {newArticleStep < 4 ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (newArticleStep === 1 && !newArticle.nombre.trim()) {
+                            alert('Por favor, ingresa el nombre del artículo.');
+                            return;
+                          }
+                          setNewArticleStep(prev => prev + 1);
+                        }}
+                        className="bg-indigo-600 hover:bg-indigo-755 text-white font-extrabold text-xs py-2.5 px-6 rounded-xl shadow-md cursor-pointer transition-all uppercase tracking-wide"
+                      >
+                        Siguiente
+                      </button>
+                    ) : (
+                      <button
+                        type="submit"
+                        className="bg-gradient-to-r from-indigo-600 to-indigo-700 hover:from-indigo-700 hover:to-indigo-800 text-white font-extrabold text-xs py-2.5 px-6 rounded-xl shadow-md cursor-pointer transition-all flex items-center justify-center gap-2 uppercase tracking-wide"
+                      >
+                        <Plus className="w-4 h-4" />
+                        <span>Crear Artículo Simple</span>
+                      </button>
+                    )}
+                  </div>
                 </div>
               </form>
             )}

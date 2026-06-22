@@ -44,22 +44,71 @@ async function syncStockToEcommerce(id_code: string) {
     if (!id_code) return;
     const cleanCode = id_code.trim();
 
-    // 1. Fetch current stock levels from SQL or mock memory
+    // 1. Fetch current stock levels AND complete product details from SQL or mock memory
     let mvd = 0;
     let pin = 0;
+    let name = "";
+    let price = 0;
+    let originalPrice: number | null = null;
+    let description = "";
+    let category = "General";
+    let subcategory = "";
+    let imageUrl = "";
+    let featured = false;
+    let paused = false;
+    let is3D = false;
+    let consultOnly = false;
+    let categoria_id: string | null = null;
+    let subcategoria_id: string | null = null;
+    let imagenes: string | null = null;
+    let variants: string | null = null;
 
     if (sql) {
-      const rows = await sql`SELECT stock_montevideo, stock_pinamar FROM stock WHERE LOWER(id_code) = LOWER(${cleanCode})`;
+      const rows = await sql`SELECT * FROM stock WHERE LOWER(id_code) = LOWER(${cleanCode})`;
       if (rows.length > 0) {
-        mvd = Number(rows[0].stock_montevideo || 0);
-        pin = Number(rows[0].stock_pinamar || 0);
+        const item = rows[0];
+        mvd = Number(item.stock_montevideo || 0);
+        pin = Number(item.stock_pinamar || 0);
+        name = item.name || "Sin nombre";
+        price = Number(item.venta_price || 0);
+        originalPrice = item.original_price === null ? null : Number(item.original_price);
+        description = item.description || "";
+        category = item.category || "";
+        subcategory = item.subcategory || "";
+        imageUrl = item.image_url || "";
+        featured = !!item.featured;
+        paused = !!item.paused;
+        is3D = !!item.is_3d;
+        consultOnly = !!item.consult_only;
+        categoria_id = item.categoria_id || null;
+        subcategoria_id = item.subcategoria_id || null;
+        imagenes = item.imagenes || null;
+        variants = item.variants || null;
       } else {
-        console.log(`[SYNC RUN] Skinned: ID code ${cleanCode} not found in database to sync.`);
+        console.log(`[SYNC RUN] Skipped: ID code ${cleanCode} not found in database to sync.`);
         return;
       }
     } else {
       // Fetch from mock_stock
       const numericId = codeToId(cleanCode);
+      const art = mock_articulos.find(a => a.id === numericId);
+      if (art) {
+        name = art.nombre || "Sin nombre";
+        price = Number(art.precio_venta || 0);
+        originalPrice = (art as any).original_price === null ? null : Number((art as any).original_price || 0);
+        description = (art as any).description || "";
+        category = (art as any).category || "";
+        subcategory = (art as any).subcategory || "";
+        imageUrl = art.imagen_url || "";
+        featured = !!(art as any).featured;
+        paused = !!(art as any).paused;
+        is3D = !!(art as any).is_3d;
+        consultOnly = !!(art as any).consult_only;
+        categoria_id = (art as any).categoria_id || null;
+        subcategoria_id = (art as any).subcategoria_id || null;
+        imagenes = (art as any).imagenes || null;
+        variants = (art as any).variants || null;
+      }
       const foundMvd = mock_stock.find(s => s.articulo_id === numericId && s.sucursal === 'Mvd');
       const foundPin = mock_stock.find(s => s.articulo_id === numericId && s.sucursal === 'Pin');
       mvd = foundMvd ? Number(foundMvd.cantidad || 0) : 0;
@@ -69,28 +118,103 @@ async function syncStockToEcommerce(id_code: string) {
     const totalStock = mvd + pin;
 
     // 2. Perform HTTP POST request to the e-commerce endpoint in background
-    let ecommerceUrl = process.env.SYNC_STOCK_URL;
-    if (!ecommerceUrl) {
+    let ecomUrl = process.env.SYNC_PRODUCT_URL;
+    if (!ecomUrl) {
       if (process.env.NODE_ENV === 'production') {
-        ecommerceUrl = 'https://juem.com.uy/api/integrations/sync-stock';
+        ecomUrl = 'https://juem.com.uy/api/integrations/sync-product';
       } else {
-        ecommerceUrl = 'https://ais-dev-orx6ehgfbywqicdsl6udb6-240256689663.us-east1.run.app/api/integrations/sync-stock';
+        ecomUrl = 'https://ais-dev-orx6ehgfbywqicdsl6udb6-240256689663.us-east1.run.app/api/integrations/sync-product';
       }
     }
     const secretKey = process.env.INTEGRATION_SECRET || 'sync_stock_default_secret_3322';
 
-    const bodyData = {
+    const bodyData: any = {
+      secretKey: secretKey,
       codigo: cleanCode,
-      stock: totalStock,
-      stock_montevideo: mvd,
-      stock_pinamar: pin,
-      secretKey: secretKey
+      name: name,
+      price: price,
+      stock: totalStock
     };
 
-    console.log(`[SYNC DE FONDO] Enviando actualización de stock de ${cleanCode} a la tienda web. Montevideo: ${mvd}, Pinamar: ${pin}, Total: ${totalStock}`);
+    if (originalPrice !== null && originalPrice !== undefined && originalPrice > 0) {
+      bodyData.originalPrice = originalPrice;
+    }
+    if (description) {
+      bodyData.description = description;
+    }
+    if (category) {
+      bodyData.category = category;
+    }
+    if (subcategory) {
+      bodyData.subcategory = subcategory;
+    }
+    if (categoria_id) {
+      bodyData.categoria_id = categoria_id;
+    }
+    if (subcategoria_id) {
+      bodyData.subcategoria_id = subcategoria_id;
+    }
+    if (imageUrl) {
+      bodyData.imageUrl = imageUrl;
+    }
+    if (imagenes) {
+      try {
+        if (imagenes.trim().startsWith('[')) {
+          bodyData.imagenes = JSON.parse(imagenes);
+        } else {
+          bodyData.imagenes = imagenes.split(',').map(s => s.trim()).filter(Boolean);
+        }
+      } catch (err) {
+        bodyData.imagenes = imagenes.split(',').map(s => s.trim()).filter(Boolean);
+      }
+    }
+    if (variants) {
+      try {
+        const rawVariants = typeof variants === 'string' ? JSON.parse(variants) : variants;
+        if (Array.isArray(rawVariants)) {
+          bodyData.variants = rawVariants.map((v: any) => {
+            const size = v.size || v.attributes?.talle || v.attributes?.size || v.talle || "Único";
+            const color = v.color || v.attributes?.color || "Base";
+            const colorLower = color.trim().toLowerCase();
+            
+            let colorCode = v.colorCode || v.attributes?.colorCode || "";
+            if (!colorCode) {
+              if (colorLower.includes("rosa")) colorCode = "#ec4899";
+              else if (colorLower.includes("celeste")) colorCode = "#38bdf8";
+              else if (colorLower.includes("negro")) colorCode = "#000000";
+              else if (colorLower.includes("blanco")) colorCode = "#ffffff";
+              else if (colorLower.includes("turquesa")) colorCode = "#06b6d4";
+              else if (colorLower.includes("azul")) colorCode = "#1d4ed8";
+              else if (colorLower.includes("gris")) colorCode = "#6b7280";
+              else colorCode = "#cbd5e1"; // fallback color
+            }
+
+            return {
+              size,
+              color,
+              colorCode,
+              stock: Number(v.stock !== undefined ? v.stock : totalStock),
+              imageUrl: v.imageUrl || v.image || imageUrl || ""
+            };
+          });
+        } else {
+          bodyData.variants = [];
+        }
+      } catch (err) {
+        bodyData.variants = [];
+      }
+    } else {
+      bodyData.variants = [];
+    }
+    bodyData.featured = !!featured;
+    bodyData.paused = !!paused;
+    bodyData.is3D = !!is3D;
+    bodyData.consultOnly = !!consultOnly;
+
+    console.log(`[SYNC UNIFICADO WEB] Sincronizando artículo ${cleanCode} ("${name}") con la tienda web: ${ecomUrl}. Stock: ${totalStock}, Precio Web/Face/Insta: $${price}`);
 
     // Call fetch in background asynchronously (using a separate promise to catch errors)
-    fetch(ecommerceUrl, {
+    fetch(ecomUrl, {
       method: "POST",
       headers: {
         "Content-Type": "application/json"
@@ -100,18 +224,27 @@ async function syncStockToEcommerce(id_code: string) {
     .then(async (res) => {
       if (!res.ok) {
         const txt = await res.text();
-        console.error(`[SYNC DE FONDO ERROR] El servidor web devolvió código ${res.status}: ${txt}`);
+        console.error(`[SYNC UNIFICADO WEB ERROR] El servidor web devolvió código ${res.status}: ${txt}`);
       } else {
         const data = await res.json();
-        console.log(`[SYNC DE FONDO OK] Sincronización exitosa con la tienda web:`, data);
+        console.log(`[SYNC UNIFICADO WEB OK] Sincronización exitosa con la tienda web:`, data);
       }
     })
     .catch((err: any) => {
-      console.error("[SYNC DE FONDO ERROR CRÍTICO] Error al conectar con el servidor de la tienda:", err.message || err);
+      console.error("[SYNC UNIFICADO WEB ERROR CRÍTICO] Error al conectar con el servidor de la tienda:", err.message || err);
     });
 
   } catch (err: any) {
     console.error("[SYNC STACK HELPER ERROR]", err);
+  }
+}
+
+// Background new article sync stub to maintain compatibility
+async function syncNewArticleToEcommerce(article: {
+  codigo: string;
+}) {
+  if (article && article.codigo) {
+    syncStockToEcommerce(article.codigo);
   }
 }
 
@@ -369,7 +502,19 @@ async function initDb() {
         stock_montevideo INTEGER NOT NULL DEFAULT 0,
         is_favorite BOOLEAN NOT NULL DEFAULT false,
         image_url TEXT DEFAULT '',
-        comision_ml_raw TEXT DEFAULT NULL
+        comision_ml_raw TEXT DEFAULT NULL,
+        original_price DECIMAL(12,2) DEFAULT NULL,
+        description TEXT DEFAULT '',
+        category TEXT DEFAULT '',
+        subcategory TEXT DEFAULT '',
+        featured BOOLEAN DEFAULT false,
+        paused BOOLEAN DEFAULT false,
+        is_3d BOOLEAN DEFAULT false,
+        consult_only BOOLEAN DEFAULT false,
+        categoria_id TEXT DEFAULT NULL,
+        subcategoria_id TEXT DEFAULT NULL,
+        imagenes TEXT DEFAULT NULL,
+        variants TEXT DEFAULT NULL
       );
     `;
 
@@ -602,6 +747,18 @@ async function initDb() {
       await sql`ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS secciones TEXT DEFAULT 'all'`;
       await sql`ALTER TABLE stock ADD COLUMN IF NOT EXISTS precio_venta_ml DECIMAL(12,2) DEFAULT NULL`;
       await sql`ALTER TABLE stock ADD COLUMN IF NOT EXISTS comision_ml_raw TEXT DEFAULT NULL`;
+      await sql`ALTER TABLE stock ADD COLUMN IF NOT EXISTS original_price DECIMAL(12,2) DEFAULT NULL`;
+      await sql`ALTER TABLE stock ADD COLUMN IF NOT EXISTS description TEXT DEFAULT ''`;
+      await sql`ALTER TABLE stock ADD COLUMN IF NOT EXISTS category TEXT DEFAULT ''`;
+      await sql`ALTER TABLE stock ADD COLUMN IF NOT EXISTS subcategory TEXT DEFAULT ''`;
+      await sql`ALTER TABLE stock ADD COLUMN IF NOT EXISTS featured BOOLEAN DEFAULT false`;
+      await sql`ALTER TABLE stock ADD COLUMN IF NOT EXISTS paused BOOLEAN DEFAULT false`;
+      await sql`ALTER TABLE stock ADD COLUMN IF NOT EXISTS is_3d BOOLEAN DEFAULT false`;
+      await sql`ALTER TABLE stock ADD COLUMN IF NOT EXISTS consult_only BOOLEAN DEFAULT false`;
+      await sql`ALTER TABLE stock ADD COLUMN IF NOT EXISTS categoria_id TEXT DEFAULT NULL`;
+      await sql`ALTER TABLE stock ADD COLUMN IF NOT EXISTS subcategoria_id TEXT DEFAULT NULL`;
+      await sql`ALTER TABLE stock ADD COLUMN IF NOT EXISTS imagenes TEXT DEFAULT NULL`;
+      await sql`ALTER TABLE stock ADD COLUMN IF NOT EXISTS variants TEXT DEFAULT NULL`;
     } catch (alterErr) {
       console.log("Non-blocking column update check:", alterErr);
     }
@@ -856,7 +1013,19 @@ async function startServer() {
             comision_ml: comVal,
             comision_ml_raw: item.comision_ml_raw || "",
             precio_venta_ml: mlVentaVal,
-            imagen_url: item.image_url || ""
+            imagen_url: item.image_url || "",
+            original_price: item.original_price === null ? null : Number(item.original_price),
+            description: item.description || "",
+            category: item.category || "",
+            subcategory: item.subcategory || "",
+            featured: !!item.featured,
+            paused: !!item.paused,
+            is_3d: !!item.is_3d,
+            consult_only: !!item.consult_only,
+            categoria_id: item.categoria_id || null,
+            subcategoria_id: item.subcategoria_id || null,
+            imagenes: item.imagenes || null,
+            variants: item.variants || null
           };
         });
 
@@ -1285,6 +1454,53 @@ async function startServer() {
     }
   });
 
+  // GET: Proxy metadata from external e-commerce
+  app.get('/api/integrations/metadata', async (req, res) => {
+    try {
+      const secretKey = process.env.INTEGRATION_SECRET || 'sync_stock_default_secret_3322';
+      const metadataUrl = `https://juem.com.uy/api/integrations/metadata?secretKey=${secretKey}`;
+
+      console.log(`[PROXY METADATA] Consultado categorías desde la web: ${metadataUrl}`);
+      const response = await fetch(metadataUrl);
+      if (!response.ok) {
+        throw new Error(`Web server returned status ${response.status}`);
+      }
+      
+      const text = await response.text();
+      if (!text || text.trim().startsWith('<') || text.trim().startsWith('<!')) {
+        throw new Error("Web server returned an HTML page or empty response instead of valid JSON metadata.");
+      }
+      
+      const data = JSON.parse(text);
+      return res.json(data);
+    } catch (err: any) {
+      console.log(`[PROXY METADATA] Servidor web offline o retorno web no JSON (${err.message || err}). Usando contingencia local.`);
+      // Fallback static response if external API is temporarily down, ensuring offline resilience
+      return res.json({
+        success: true,
+        categories: [
+          { id: "cat-informatica", nombre: "Informática" },
+          { id: "cat-ropa", nombre: "Ropa" },
+          { id: "cat-hogar", nombre: "Hogar" },
+          { id: "cat-gamer", nombre: "Gamer" },
+          { id: "cat-personalizados", nombre: "Personalizados" },
+          { id: "cat-decoracion", nombre: "Decoración" },
+          { id: "cat-velas", nombre: "Velas" },
+          { id: "cat-mates", nombre: "Mates" }
+        ],
+        subcategories: [
+          { id: "sub-accesorios-inf", nombre: "Accesorios", categoria_id: "cat-informatica" },
+          { id: "sub-fundas-inf", nombre: "Fundas", categoria_id: "cat-informatica" },
+          { id: "sub-mates-impr", nombre: "Mates impresos", categoria_id: "cat-mates" },
+          { id: "sub-mates", nombre: "Mate", categoria_id: "cat-mates" },
+          { id: "sub-cuadros", nombre: "Cuadros", categoria_id: "cat-decoracion" },
+          { id: "sub-relojes", nombre: "Relojes", categoria_id: "cat-decoracion" },
+          { id: "sub-velas", nombre: "Velas aromáticas", categoria_id: "cat-velas" }
+        ]
+      });
+    }
+  });
+
   // GET: All stock items and their effective stocks across branches
   app.get('/api/articulos', async (req, res) => {
     try {
@@ -1323,7 +1539,7 @@ async function startServer() {
   // POST: Add new simple or compound article
   app.post('/api/articulos', async (req, res) => {
     try {
-      const { codigo, nombre, tipo, precio_venta, costo, componentes, inicial_mvd, inicial_pin, comision_ml, precio_venta_ml, imagen_url, comision_ml_raw } = req.body;
+      const { codigo, nombre, tipo, precio_venta, costo, componentes, inicial_mvd, inicial_pin, comision_ml, precio_venta_ml, imagen_url, comision_ml_raw, original_price, description, category, subcategory, featured, paused, is_3d, consult_only, categoria_id, subcategoria_id, imagenes, variants } = req.body;
       
       if (!codigo || !nombre || !tipo) {
         return res.status(400).json({ error: "Código, nombre y tipo son campos requeridos." });
@@ -1353,10 +1569,25 @@ async function startServer() {
           commissionFlatAmount = cML <= 1 ? (cML * pVentaML) : cML;
         }
 
+        const serializedImagenes = Array.isArray(imagenes) ? JSON.stringify(imagenes) : (imagenes || '');
+        const serializedVariants = typeof variants === 'string' ? variants : JSON.stringify(variants || []);
+
         // Save to postgres 'stock' table directly
         await sql`
-          INSERT INTO stock (id_code, name, compra_price, comision_ml, venta_price, precio_venta_ml, stock_pinamar, stock_montevideo, is_favorite, image_url, comision_ml_raw)
-          VALUES (${codigo}, ${nombre}, ${cCosto}, ${commissionFlatAmount}, ${pVenta}, ${Number(precio_venta_ml || pVenta)}, ${Number(inicial_pin || 0)}, ${Number(inicial_mvd || 0)}, false, ${imgUrl}, ${comision_ml_raw !== undefined && comision_ml_raw !== null ? String(comision_ml_raw) : null})
+          INSERT INTO stock (
+            id_code, name, compra_price, comision_ml, venta_price, precio_venta_ml, 
+            stock_pinamar, stock_montevideo, is_favorite, image_url, comision_ml_raw,
+            original_price, description, category, subcategory, featured, paused, is_3d, consult_only,
+            categoria_id, subcategoria_id, imagenes, variants
+          )
+          VALUES (
+            ${codigo}, ${nombre}, ${cCosto}, ${commissionFlatAmount}, ${pVenta}, ${Number(precio_venta_ml || pVenta)}, 
+            ${Number(inicial_pin || 0)}, ${Number(inicial_mvd || 0)}, false, ${imgUrl}, ${comision_ml_raw !== undefined && comision_ml_raw !== null ? String(comision_ml_raw) : null},
+            ${original_price !== undefined && original_price !== null && original_price !== '' ? Number(original_price) : null},
+            ${description || ''}, ${category || ''}, ${subcategory || ''}, 
+            ${!!featured}, ${!!paused}, ${!!is_3d}, ${!!consult_only},
+            ${categoria_id || null}, ${subcategoria_id || null}, ${serializedImagenes}, ${serializedVariants}
+          )
           ON CONFLICT (id_code) DO NOTHING
         `;
 
@@ -1371,7 +1602,19 @@ async function startServer() {
           precio_venta_ml: Number(precio_venta_ml || pVenta),
           imagen_url: imgUrl,
           mvd_stock: Number(inicial_mvd || 0),
-          pin_stock: Number(inicial_pin || 0)
+          pin_stock: Number(inicial_pin || 0),
+          original_price: original_price !== undefined && original_price !== null && original_price !== '' ? Number(original_price) : null,
+          description: description || '',
+          category: category || '',
+          subcategory: subcategory || '',
+          featured: !!featured,
+          paused: !!paused,
+          is_3d: !!is_3d,
+          consult_only: !!consult_only,
+          categoria_id: categoria_id || null,
+          subcategoria_id: subcategoria_id || null,
+          imagenes: serializedImagenes,
+          variants: serializedVariants
         };
 
         // If it is a compound bundle/combo, save its formula components into combos
@@ -1405,7 +1648,33 @@ async function startServer() {
           commissionFlatAmount = cML <= 1 ? (cML * pVentaML) : cML;
         }
 
-        savedItem = { id: nextId, codigo, nombre, tipo, precio_venta: pVenta, costo: cCosto, comision_ml: commissionFlatAmount, comision_ml_raw: comision_ml_raw || "", precio_venta_ml: pVenta, imagen_url: imgUrl };
+        const serializedImagenes = Array.isArray(imagenes) ? JSON.stringify(imagenes) : (imagenes || '');
+        const serializedVariants = typeof variants === 'string' ? variants : JSON.stringify(variants || []);
+
+        savedItem = { 
+          id: nextId, 
+          codigo, 
+          nombre, 
+          tipo, 
+          precio_venta: pVenta, 
+          costo: cCosto, 
+          comision_ml: commissionFlatAmount, 
+          comision_ml_raw: comision_ml_raw || "", 
+          precio_venta_ml: pVenta, 
+          imagen_url: imgUrl,
+          original_price: original_price !== undefined && original_price !== null && original_price !== '' ? Number(original_price) : null,
+          description: description || '',
+          category: category || '',
+          subcategory: subcategory || '',
+          featured: !!featured,
+          paused: !!paused,
+          is_3d: !!is_3d,
+          consult_only: !!consult_only,
+          categoria_id: categoria_id || null,
+          subcategoria_id: subcategoria_id || null,
+          imagenes: serializedImagenes,
+          variants: serializedVariants
+        };
         mock_articulos.push(savedItem);
 
         if (tipo === 'simple') {
@@ -1427,6 +1696,15 @@ async function startServer() {
       // Sync stock with Web E-commerce
       syncStockToEcommerce(codigo);
 
+      // Async Sync new article creation details with Web E-commerce
+      if (savedItem) {
+        syncNewArticleToEcommerce({
+          ...savedItem,
+          mvd_stock: Number(inicial_mvd || 0),
+          pin_stock: Number(inicial_pin || 0)
+        });
+      }
+
       res.json({ success: true, item: savedItem });
     } catch (err: any) {
       console.error(err);
@@ -1438,7 +1716,7 @@ async function startServer() {
   app.put('/api/articulos/:id', async (req, res) => {
     try {
       const id = Number(req.params.id);
-      const { nombre, precio_venta, costo, comision_ml, imagen_url, mvd_stock, pin_stock, componentes, tipo, precio_venta_ml, comision_ml_raw } = req.body;
+      const { nombre, precio_venta, costo, comision_ml, imagen_url, mvd_stock, pin_stock, componentes, tipo, precio_venta_ml, comision_ml_raw, original_price, description, category, subcategory, featured, paused, is_3d, consult_only, categoria_id, subcategoria_id, imagenes, variants } = req.body;
 
       if (!nombre) {
         return res.status(400).json({ error: "Nombre es requerido." });
@@ -1479,6 +1757,9 @@ async function startServer() {
           isCombo = code.toUpperCase().startsWith('C') || dbCombosCheck.length > 0;
         }
 
+        const serializedImagenes = Array.isArray(imagenes) ? JSON.stringify(imagenes) : (imagenes || '');
+        const serializedVariants = typeof variants === 'string' ? variants : JSON.stringify(variants || []);
+
         if (isCombo) {
           await sql`
             UPDATE stock
@@ -1490,7 +1771,19 @@ async function startServer() {
                 image_url = ${imgUrl},
                 stock_montevideo = 0,
                 stock_pinamar = 0,
-                comision_ml_raw = ${comision_ml_raw !== undefined && comision_ml_raw !== null ? String(comision_ml_raw) : null}
+                comision_ml_raw = ${comision_ml_raw !== undefined && comision_ml_raw !== null ? String(comision_ml_raw) : null},
+                original_price = ${original_price !== undefined && original_price !== null && original_price !== '' ? Number(original_price) : null},
+                description = ${description || ''},
+                category = ${category || ''},
+                subcategory = ${subcategory || ''},
+                featured = ${!!featured},
+                paused = ${!!paused},
+                is_3d = ${!!is_3d},
+                consult_only = ${!!consult_only},
+                categoria_id = ${categoria_id || null},
+                subcategoria_id = ${subcategoria_id || null},
+                imagenes = ${serializedImagenes},
+                variants = ${serializedVariants}
             WHERE id_code = ${code}
           `;
 
@@ -1518,7 +1811,19 @@ async function startServer() {
                 image_url = ${imgUrl},
                 stock_montevideo = ${Number(mvd_stock || 0)},
                 stock_pinamar = ${Number(pin_stock || 0)},
-                comision_ml_raw = ${comision_ml_raw !== undefined && comision_ml_raw !== null ? String(comision_ml_raw) : null}
+                comision_ml_raw = ${comision_ml_raw !== undefined && comision_ml_raw !== null ? String(comision_ml_raw) : null},
+                original_price = ${original_price !== undefined && original_price !== null && original_price !== '' ? Number(original_price) : null},
+                description = ${description || ''},
+                category = ${category || ''},
+                subcategory = ${subcategory || ''},
+                featured = ${!!featured},
+                paused = ${!!paused},
+                is_3d = ${!!is_3d},
+                consult_only = ${!!consult_only},
+                categoria_id = ${categoria_id || null},
+                subcategoria_id = ${subcategoria_id || null},
+                imagenes = ${serializedImagenes},
+                variants = ${serializedVariants}
             WHERE id_code = ${code}
           `;
 
@@ -1555,6 +1860,18 @@ async function startServer() {
         if (tipo) {
           item.tipo = tipo;
         }
+         if (original_price !== undefined) (item as any).original_price = original_price ? Number(original_price) : null;
+        if (description !== undefined) (item as any).description = description;
+        if (category !== undefined) (item as any).category = category;
+        if (subcategory !== undefined) (item as any).subcategory = subcategory;
+        if (featured !== undefined) (item as any).featured = !!featured;
+        if (paused !== undefined) (item as any).paused = !!paused;
+        if (is_3d !== undefined) (item as any).is_3d = !!is_3d;
+        if (consult_only !== undefined) (item as any).consult_only = !!consult_only;
+        if (categoria_id !== undefined) (item as any).categoria_id = categoria_id;
+        if (subcategoria_id !== undefined) (item as any).subcategoria_id = subcategoria_id;
+        if (imagenes !== undefined) (item as any).imagenes = Array.isArray(imagenes) ? JSON.stringify(imagenes) : imagenes;
+        if (variants !== undefined) (item as any).variants = typeof variants === 'string' ? variants : JSON.stringify(variants);
 
         if (item.tipo === 'simple') {
           // delete potential combos
