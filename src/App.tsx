@@ -1094,6 +1094,7 @@ export default function App() {
   const [adjustSuccess, setAdjustSuccess] = useState('');
 
   const [newArticleStep, setNewArticleStep] = useState(1);
+  const [lastStepChange, setLastStepChange] = useState<number>(0);
   const [editArticleStep, setEditArticleStep] = useState(1);
 
   // States for Cloudinary Uploads and Drag & Drop Reordering
@@ -1349,6 +1350,12 @@ export default function App() {
     setArticleError('');
     setArticleSuccess('');
 
+    const now = Date.now();
+    if (now - lastStepChange < 650) {
+      console.log("Sometimiento de formulario bloqueado por clic doble rápido.");
+      return;
+    }
+
     // Prevenir creación si no se llega al último paso (Paso 4 / Variantes y Control)
     if (newArticleStep < 4) {
       if (newArticleStep === 1 && !newArticle.nombre.trim()) {
@@ -1357,6 +1364,7 @@ export default function App() {
         return;
       }
       setNewArticleStep(prev => prev + 1);
+      setLastStepChange(now);
       return;
     }
 
@@ -3193,6 +3201,7 @@ export default function App() {
                         setCreationType('simple');
                         setIsCreateModalOpen(true);
                         setNewArticleStep(1);
+                        setLastStepChange(Date.now());
                         setArticleSuccess('');
                         setArticleError('');
                         setComboSuccess('');
@@ -12505,6 +12514,9 @@ export default function App() {
                   <button
                     type="button"
                     onClick={() => {
+                      const now = Date.now();
+                      if (now - lastStepChange < 650) return;
+                      setLastStepChange(now);
                       if (newArticleStep > 1) {
                         setNewArticleStep(prev => prev - 1);
                       } else {
@@ -12521,11 +12533,15 @@ export default function App() {
                       <button
                         type="button"
                         onClick={() => {
+                          const now = Date.now();
+                          if (now - lastStepChange < 650) return;
+
                           if (newArticleStep === 1 && !newArticle.nombre.trim()) {
                             alert('Por favor, ingresa el nombre del artículo.');
                             return;
                           }
                           setNewArticleStep(prev => prev + 1);
+                          setLastStepChange(now);
                         }}
                         className="bg-indigo-600 hover:bg-indigo-755 text-white font-extrabold text-xs py-2.5 px-6 rounded-xl shadow-md cursor-pointer transition-all uppercase tracking-wide"
                       >
