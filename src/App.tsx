@@ -1349,6 +1349,17 @@ export default function App() {
     setArticleError('');
     setArticleSuccess('');
 
+    // Prevenir creación si no se llega al último paso (Paso 4 / Variantes y Control)
+    if (newArticleStep < 4) {
+      if (newArticleStep === 1 && !newArticle.nombre.trim()) {
+        setArticleError('El nombre del producto es obligatorio.');
+        alert('Por favor, ingresa el nombre del artículo.');
+        return;
+      }
+      setNewArticleStep(prev => prev + 1);
+      return;
+    }
+
     if (!newArticle.nombre.trim()) {
       setArticleError('El nombre del producto es obligatorio.');
       return;
