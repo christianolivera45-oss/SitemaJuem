@@ -11,8 +11,14 @@ import jwt from 'jsonwebtoken';
 
 dotenv.config({ override: true });
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+// Safely resolve __filename and __dirname for both ESM and CJS environments
+const __filename = typeof import.meta !== 'undefined' && import.meta.url 
+  ? fileURLToPath(import.meta.url) 
+  : ((globalThis as any).__filename || '');
+
+const __dirname = typeof (globalThis as any).__dirname !== 'undefined' 
+  ? (globalThis as any).__dirname 
+  : (__filename ? path.dirname(__filename) : '');
 
 // Helper functions to translate string SKU (e.g. 'J006' or 'C001') to/from numeric IDs
 function codeToId(code: string): number {
