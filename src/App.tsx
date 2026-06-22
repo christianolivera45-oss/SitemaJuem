@@ -10219,9 +10219,15 @@ export default function App() {
                               {/* Calculated Estimation Fee & profit */}
                               <div className="flex items-center justify-between bg-white px-2.5 py-1.5 rounded-lg border border-slate-200/50 mt-2">
                                 <span className="text-[11px] font-bold text-slate-600 font-sans">Ganancia Estimada ML</span>
-                                <span className="font-mono font-extrabold text-emerald-600 text-sm">
-                                  ${expectedMlProfit.toFixed(1)}
-                                </span>
+                                {selectedArticle.comision_ml === 0 ? (
+                                  <span className="text-[11px] font-semibold text-slate-400 font-sans italic">
+                                    No aplica (Sin publicar)
+                                  </span>
+                                ) : (
+                                  <span className="font-mono font-extrabold text-emerald-600 text-sm">
+                                    ${expectedMlProfit.toFixed(1)}
+                                  </span>
+                                )}
                               </div>
                             </div>
                           </div>
