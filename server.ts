@@ -8,6 +8,7 @@ import postgres from 'postgres';
 import { createServer as createViteServer } from 'vite';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
+import crypto from 'crypto';
 
 dotenv.config({ override: true });
 
@@ -1239,6 +1240,52 @@ async function startServer() {
     }
   });
 
+  // POST: Subir foto a Cloudinary
+  app.post('/api/upload-cloudinary', async (req, res) => {
+    try {
+      const { image } = req.body;
+      if (!image) {
+        return res.status(400).json({ error: "No se proporcionó ninguna imagen." });
+      }
+
+      const timestamp = Math.round(new Date().getTime() / 1000);
+      const apiSecret = process.env.CLOUDINARY_API_SECRET || "DyR_LqdbRSfN4sERCVjZLdNxD08";
+      const apiKey = process.env.CLOUDINARY_API_KEY || "215381632363685";
+      const cloudName = process.env.CLOUDINARY_CLOUD_NAME || "dwqzjqjwz";
+
+      // Crear la firma sha1 de Cloudinary
+      const signatureStr = `timestamp=${timestamp}${apiSecret}`;
+      const signature = crypto.createHash('sha1').update(signatureStr).digest('hex');
+
+      const body = new FormData();
+      body.append('file', image);
+      body.append('timestamp', String(timestamp));
+      body.append('api_key', apiKey);
+      body.append('signature', signature);
+
+      const response = await fetch(`https://api.cloudinary.com/v1_1/${cloudName}/image/upload`, {
+        method: 'POST',
+        body
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error("Cloudinary upload error description:", errorText);
+        return res.status(response.status).json({ error: `Cloudinary devolvió un error: ${errorText}` });
+      }
+
+      const result = await response.json();
+      if (result.secure_url) {
+        return res.json({ url: result.secure_url });
+      } else {
+        return res.status(500).json({ error: "Cloudinary no devolvió la URL segura", details: result });
+      }
+    } catch (err: any) {
+      console.error("Error al subir a Cloudinary:", err);
+      return res.status(500).json({ error: err?.message || "Error al subir la imagen en el servidor." });
+    }
+  });
+
   // GET: List all users (Admin only)
   app.get('/api/usuarios', async (req, res) => {
     try {
@@ -1591,6 +1638,48 @@ async function startServer() {
           ON CONFLICT (id_code) DO NOTHING
         `;
 
+        // Insert variants as separate independent articles
+        let parsedVariants: any[] = [];
+        try {
+          parsedVariants = typeof variants === 'string' ? JSON.parse(variants) : (variants || []);
+        } catch (e) {
+          console.error("Error parsing variants JSON in server:", e);
+        }
+
+        if (Array.isArray(parsedVariants) && parsedVariants.length > 0) {
+          for (const variant of parsedVariants) {
+            const variantSku = variant.sku || '';
+            if (!variantSku) continue;
+
+            const talle = variant.attributes?.talle || '';
+            const color = variant.attributes?.color || '';
+            const variantName = nombre + (talle || color ? ` - ${talle}${talle && color ? ' / ' : ''}${color}` : '');
+            
+            const variantVentaML = Number(variant.price || pVenta);
+            const variantVentaGeneral = variantVentaML - commissionFlatAmount;
+            const variantImgUrl = variant.imagen_url || imgUrl;
+            const variantStock = Number(variant.stock || 0);
+
+            await sql`
+              INSERT INTO stock (
+                id_code, name, compra_price, comision_ml, venta_price, precio_venta_ml, 
+                stock_pinamar, stock_montevideo, is_favorite, image_url, comision_ml_raw,
+                original_price, description, category, subcategory, featured, paused, is_3d, consult_only,
+                categoria_id, subcategoria_id, imagenes, variants
+              )
+              VALUES (
+                ${variantSku}, ${variantName}, ${cCosto}, ${commissionFlatAmount}, ${variantVentaGeneral}, ${variantVentaML}, 
+                0, ${variantStock}, false, ${variantImgUrl}, ${comision_ml_raw !== undefined && comision_ml_raw !== null ? String(comision_ml_raw) : null},
+                ${original_price !== undefined && original_price !== null && original_price !== '' ? Number(original_price) : null},
+                ${description || ''}, ${category || ''}, ${subcategory || ''}, 
+                ${!!featured}, ${!!paused}, ${!!is_3d}, ${!!consult_only},
+                ${categoria_id || null}, ${subcategoria_id || null}, '[]', '[]'
+              )
+              ON CONFLICT (id_code) DO NOTHING
+            `;
+          }
+        }
+
         savedItem = {
           id: codeToId(codigo),
           codigo,
@@ -1680,6 +1769,58 @@ async function startServer() {
         if (tipo === 'simple') {
           mock_stock.push({ id: mock_stock.length + 1, articulo_id: nextId, sucursal: "Mvd", cantidad: Number(inicial_mvd || 0) });
           mock_stock.push({ id: mock_stock.length + 1, articulo_id: nextId, sucursal: "Pin", cantidad: Number(inicial_pin || 0) });
+
+          // Also add mock articles for variants
+          let parsedVariants: any[] = [];
+          try {
+            parsedVariants = typeof variants === 'string' ? JSON.parse(variants) : (variants || []);
+          } catch (e) {}
+
+          if (Array.isArray(parsedVariants) && parsedVariants.length > 0) {
+            for (const variant of parsedVariants) {
+              const variantSku = variant.sku || '';
+              if (!variantSku) continue;
+
+              const talle = variant.attributes?.talle || '';
+              const color = variant.attributes?.color || '';
+              const variantName = nombre + (talle || color ? ` - ${talle}${talle && color ? ' / ' : ''}${color}` : '');
+              
+              const variantVentaML = Number(variant.price || pVenta);
+              const variantVentaGeneral = variantVentaML - commissionFlatAmount;
+              const variantImgUrl = variant.imagen_url || imgUrl;
+              const variantStock = Number(variant.stock || 0);
+
+              const vNextId = mock_articulos.length > 0 ? Math.max(...mock_articulos.map(a => a.id)) + 1 : 1;
+              const vItem = {
+                id: vNextId,
+                codigo: variantSku,
+                nombre: variantName,
+                tipo: 'simple',
+                precio_venta: variantVentaGeneral,
+                costo: cCosto,
+                comision_ml: commissionFlatAmount,
+                comision_ml_raw: comision_ml_raw || "",
+                precio_venta_ml: variantVentaML,
+                imagen_url: variantImgUrl,
+                original_price: original_price !== undefined && original_price !== null && original_price !== '' ? Number(original_price) : null,
+                description: description || '',
+                category: category || '',
+                subcategory: subcategory || '',
+                featured: !!featured,
+                paused: !!paused,
+                is_3d: !!is_3d,
+                consult_only: !!consult_only,
+                categoria_id: categoria_id || null,
+                subcategoria_id: subcategoria_id || null,
+                imagenes: '[]',
+                variants: '[]'
+              };
+              mock_articulos.push(vItem);
+
+              mock_stock.push({ id: mock_stock.length + 1, articulo_id: vNextId, sucursal: "Mvd", cantidad: variantStock });
+              mock_stock.push({ id: mock_stock.length + 1, articulo_id: vNextId, sucursal: "Pin", cantidad: 0 });
+            }
+          }
         } else if (tipo === 'compuesto' && Array.isArray(componentes)) {
           for (const comp of componentes) {
             mock_combos.push({

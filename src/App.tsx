@@ -1096,6 +1096,12 @@ export default function App() {
   const [newArticleStep, setNewArticleStep] = useState(1);
   const [editArticleStep, setEditArticleStep] = useState(1);
 
+  // States for Cloudinary Uploads and Drag & Drop Reordering
+  const [isUploadingImages, setIsUploadingImages] = useState(false);
+  const [dragOverImages, setDragOverImages] = useState(false);
+  const [inputImageUrlText, setInputImageUrlText] = useState('');
+  const [draggedImgIndex, setDraggedImgIndex] = useState<number | null>(null);
+
   // States for Variant Builder (New Article and Edit Article)
   const [varSize, setVarSize] = useState('');
   const [varColor, setVarColor] = useState('');
@@ -2545,6 +2551,16 @@ export default function App() {
     const maxNum = Math.max(...numbers);
     const nextNum = maxNum >= 100 ? maxNum + 1 : 104; // Ensure we go past J001-J005 towards J104+
     return `J${String(nextNum).padStart(3, '0')}`;
+  };
+
+  const getVariantSku = (index: number) => {
+    const baseSku = getNextAvailableSku();
+    const match = baseSku.match(/^J(\d+)$/);
+    if (match) {
+      const baseNum = parseInt(match[1], 10);
+      return `J${String(baseNum + index + 1).padStart(3, '0')}`;
+    }
+    return `${baseSku}-${index + 1}`;
   };
 
   const getNextAvailableComboSku = () => {
@@ -9963,17 +9979,40 @@ export default function App() {
                     </div>
 
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
-                      {/* Precio Original (para Ofertas) */}
-                      <div className="space-y-1.5">
-                        <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">Precio Original/Tachado ($)</label>
-                        <input
-                          type="number"
-                          min="0"
-                          value={editArticleForm.original_price}
-                          onChange={(e) => setEditArticleForm(prev => ({ ...prev, original_price: e.target.value }))}
-                          placeholder="Ej: 1890"
-                          className="w-full bg-white border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs text-slate-800 font-bold font-mono focus:ring-2 focus:ring-indigo-500 focus:outline-none"
-                        />
+                      {/* Descuento (%) para Ofertas (Edit Mode) */}
+                      <div className="space-y-1.5 font-sans">
+                        <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">Descuento (%)</label>
+                        <div className="relative">
+                          <input
+                            type="number"
+                            min="0"
+                            max="99"
+                            value={
+                              editArticleForm.original_price && Number(editArticleForm.original_price) > Number(editArticleForm.precio_venta_ml || editArticleForm.precio_venta || 0)
+                                ? Math.round((1 - (Number(editArticleForm.precio_venta_ml || editArticleForm.precio_venta || 0) / Number(editArticleForm.original_price))) * 100)
+                                : ''
+                            }
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              const desc = Number(val);
+                              const pMl = Number(editArticleForm.precio_venta_ml || editArticleForm.precio_venta || 0);
+                              if (val === '' || isNaN(desc) || desc <= 0) {
+                                setEditArticleForm(prev => ({ ...prev, original_price: '' }));
+                              } else if (desc > 0 && desc < 100 && pMl > 0) {
+                                const calculatedOriginal = Math.round(pMl / (1 - desc / 100));
+                                setEditArticleForm(prev => ({ ...prev, original_price: String(calculatedOriginal) }));
+                              }
+                            }}
+                            placeholder="Ej: 20"
+                            className="w-full bg-white border border-slate-200 rounded-xl pl-2.5 pr-8 py-1.5 text-xs text-slate-800 font-bold font-mono focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                          />
+                          <span className="absolute right-3 top-1.5 text-xs font-bold text-slate-400 pointer-events-none">%</span>
+                        </div>
+                        {editArticleForm.original_price && (
+                          <span className="text-[9px] text-slate-400 block mt-1">
+                            Equivale a un Precio Original de <strong className="font-mono">${Number(editArticleForm.original_price).toLocaleString('es-UY')} (Tachado)</strong>
+                          </span>
+                        )}
                       </div>
 
                       {/* Categoría */}
@@ -11701,17 +11740,40 @@ export default function App() {
                         />
                       </div>
 
-                      {/* Precio Original (para Ofertas) */}
+                      {/* Descuento (%) para Ofertas */}
                       <div className="space-y-1.5 font-sans">
-                        <label className="text-[10px] font-bold text-slate-505 uppercase tracking-wider block">Precio Original o Tachado ($)</label>
-                        <input
-                          type="number"
-                          min="0"
-                          value={newArticle.original_price}
-                          onChange={(e) => setNewArticle(prev => ({ ...prev, original_price: e.target.value }))}
-                          placeholder="Ej: 1890 (Tachado)"
-                          className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs focus:ring-2 focus:ring-indigo-500 focus:outline-none font-bold text-slate-800 font-mono"
-                        />
+                        <label className="text-[10px] font-bold text-slate-505 uppercase tracking-wider block">Descuento (%)</label>
+                        <div className="relative">
+                          <input
+                            type="number"
+                            min="0"
+                            max="99"
+                            value={
+                              newArticle.original_price && Number(newArticle.original_price) > Number(newArticle.precio_venta_ml || suggested40)
+                                ? Math.round((1 - (Number(newArticle.precio_venta_ml || suggested40) / Number(newArticle.original_price))) * 100)
+                                : ''
+                            }
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              const desc = Number(val);
+                              const pMl = Number(newArticle.precio_venta_ml || suggested40);
+                              if (val === '' || isNaN(desc) || desc <= 0) {
+                                setNewArticle(prev => ({ ...prev, original_price: '' }));
+                              } else if (desc > 0 && desc < 100 && pMl > 0) {
+                                const calculatedOriginal = Math.round(pMl / (1 - desc / 100));
+                                setNewArticle(prev => ({ ...prev, original_price: String(calculatedOriginal) }));
+                              }
+                            }}
+                            placeholder="Ej: 20"
+                            className="w-full bg-white border border-slate-200 rounded-xl pl-3 pr-8 py-2 text-xs focus:ring-2 focus:ring-indigo-500 focus:outline-none font-bold text-slate-800 font-mono"
+                          />
+                          <span className="absolute right-3 top-2 text-xs font-bold text-slate-400 pointer-events-none">%</span>
+                        </div>
+                        {newArticle.original_price && (
+                          <span className="text-[9px] text-slate-400 block mt-1">
+                            Equivale a un Precio Original de <strong className="font-mono">${Number(newArticle.original_price).toLocaleString('es-UY')} (Tachado)</strong>
+                          </span>
+                        )}
                       </div>
 
                       {/* Precio Web/Face/Insta Display (Venta ML - Comisión ML) */}
@@ -11729,204 +11791,265 @@ export default function App() {
                 )}
 
                 {/* Step 3: Imágenes */}
-                {newArticleStep === 3 && (
-                  <div className="space-y-4 animate-fade-in font-sans">
-                    <div className="bg-slate-50 border border-slate-200/60 rounded-2xl p-4.5 space-y-4">
-                      <div className="flex items-center justify-between border-b border-slate-200/60 pb-2">
-                        <div>
-                          <h4 className="text-xs font-bold text-slate-800">Galería Fotográfica del Producto</h4>
-                          <p className="text-[10px] text-slate-400">Configura la foto de portada de tu e-commerce y fotos complementarias</p>
-                        </div>
-                        <span className="text-[9px] font-bold bg-indigo-55 text-indigo-600 px-2 py-0.5 rounded border border-indigo-110">INTEGRACIÓN</span>
-                      </div>
+                {newArticleStep === 3 && (() => {
+                  const combinedImages: string[] = [];
+                  if (newArticle.imagen_url) {
+                    combinedImages.push(newArticle.imagen_url);
+                  }
+                  if (newArticle.imagenes) {
+                    const extra = newArticle.imagenes.split(',').map(u => u.trim()).filter(Boolean);
+                    extra.forEach(u => {
+                      if (!combinedImages.includes(u)) {
+                        combinedImages.push(u);
+                      }
+                    });
+                  }
 
-                      {/* Inputs Manuales */}
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
-                        <div className="space-y-1.5">
-                          <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">URL Foto Portada (Principal *)</label>
-                          <input
-                            type="url"
-                            value={newArticle.imagen_url}
-                            onChange={(e) => setNewArticle(prev => ({ ...prev, imagen_url: e.target.value }))}
-                            placeholder="https://images.unsplash.com/..."
-                            className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs focus:ring-2 focus:ring-indigo-500 focus:outline-none font-medium text-slate-800"
-                          />
-                        </div>
-                        <div className="space-y-1.5">
-                          <label className="text-[10px] font-bold text-slate-505 uppercase tracking-wider block">Fotos Secundarias (URLs separadas por coma)</label>
-                          <input
-                            type="text"
-                            value={newArticle.imagenes}
-                            onChange={(e) => setNewArticle(prev => ({ ...prev, imagenes: e.target.value }))}
-                            placeholder="https://img1.jpg, https://img2.jpg"
-                            className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs focus:ring-2 focus:ring-indigo-500 focus:outline-none font-medium text-slate-800"
-                          />
-                        </div>
-                      </div>
+                  const updateImages = (newImages: string[]) => {
+                    const cleanList = newImages.map(u => u.trim()).filter(Boolean);
+                    const principal = cleanList[0] || '';
+                    const secondaries = cleanList.slice(1).join(', ');
+                    setNewArticle(prev => ({
+                      ...prev,
+                      imagen_url: principal,
+                      imagenes: secondaries
+                    }));
+                  };
 
-                      {/* Stock Preset Picker */}
-                      <div className="space-y-2">
-                        <span className="text-[9.5px] font-extrabold text-slate-450 uppercase tracking-wide block">💡 Fotos Rápidas desde ERP Stock para Pruebas:</span>
-                        <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5">
-                          {[
-                            { name: 'Remera Lino Ligt', url: 'https://images.unsplash.com/photo-1596755094514-f87e34085b2c?auto=format&fit=crop&w=400&q=80' },
-                            { name: 'Remera Cotton Negra', url: 'https://images.unsplash.com/photo-1521572267360-ee0c2909d518?auto=format&fit=crop&w=400&q=80' },
-                            { name: 'Buso Oversize Ash', url: 'https://images.unsplash.com/photo-1556821840-3a63f95609a7?auto=format&fit=crop&w=400&q=80' },
-                            { name: 'Jeans Blue Denim', url: 'https://images.unsplash.com/photo-1542272604-787c3835535d?auto=format&fit=crop&w=400&q=80' },
-                            { name: 'Gorra Urban Dark', url: 'https://images.unsplash.com/photo-1534215754734-18e55d13ce35?auto=format&fit=crop&w=400&q=80' }
-                          ].map((photo, pIdx) => (
-                            <button
-                              type="button"
-                              key={`preset_photo_${pIdx}`}
-                              onClick={() => {
-                                if (!newArticle.imagen_url) {
-                                  setNewArticle(prev => ({ ...prev, imagen_url: photo.url }));
-                                } else {
-                                  const secList = newArticle.imagenes ? newArticle.imagenes.split(',').map(x => x.trim()).filter(Boolean) : [];
-                                  if (!secList.includes(photo.url)) {
-                                    secList.push(photo.url);
-                                    setNewArticle(prev => ({ ...prev, imagenes: secList.join(', ') }));
-                                  }
-                                }
-                              }}
-                              className="group relative h-16 rounded-xl overflow-hidden border border-slate-205 cursor-pointer bg-white scale-100 hover:scale-[1.03] transition-all"
-                            >
-                              <img src={photo.url} alt={photo.name} referrerPolicy="no-referrer" className="w-full h-full object-cover" />
-                              <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
-                                <span className="text-[8px] font-bold text-white uppercase text-center px-1">Añadir</span>
-                              </div>
-                            </button>
-                          ))}
-                        </div>
-                      </div>
+                  const handleCloudinaryUpload = async (files: FileList | null) => {
+                    if (!files || files.length === 0) return;
+                    setIsUploadingImages(true);
+                    try {
+                      const uploadedUrls: string[] = [];
+                      for (let i = 0; i < files.length; i++) {
+                        const file = files[i];
+                        const base64 = await new Promise<string>((resolve, reject) => {
+                          const reader = new FileReader();
+                          reader.readAsDataURL(file);
+                          reader.onload = () => resolve(reader.result as string);
+                          reader.onerror = (err) => reject(err);
+                        });
 
-                      {/* Drag and Drop o click zone */}
-                      <div
-                        onClick={() => {
-                          // Simulate drag and drop / local upload by injecting a beautiful high quality picture of clothing
-                          const randomPhotos = [
-                            'https://images.unsplash.com/photo-1578587018452-892bacefd3f2?auto=format&fit=crop&w=400&q=80',
-                            'https://images.unsplash.com/photo-1539109136881-3be0616acf4b?auto=format&fit=crop&w=400&q=80',
-                            'https://images.unsplash.com/photo-1434389677669-e08b4cac3105?auto=format&fit=crop&w=400&q=80',
-                            'https://images.unsplash.com/photo-1620799140408-edc6dcb6d633?auto=format&fit=crop&w=400&q=80'
-                          ];
-                          const randomUrl = randomPhotos[Math.floor(Math.random() * randomPhotos.length)];
-                          if (!newArticle.imagen_url) {
-                            setNewArticle(prev => ({ ...prev, imagen_url: randomUrl }));
-                          } else {
-                            const secList = prev => prev.imagenes ? prev.imagenes.split(',').map(x => x.trim()).filter(Boolean) : [];
-                            setNewArticle(prev => {
-                              const list = prev.imagenes ? prev.imagenes.split(',').map(x => x.trim()).filter(Boolean) : [];
-                              if (!list.includes(randomUrl)) list.push(randomUrl);
-                              return { ...prev, imagenes: list.join(', ') };
-                            });
-                          }
-                        }}
-                        className="border-2 border-dashed border-slate-200 rounded-xl p-4.5 text-center bg-slate-50/50 hover:bg-slate-100/40 cursor-pointer transition-colors group"
-                      >
-                        <span className="text-xl block mb-1">☁️</span>
-                        <span className="text-xs font-bold text-slate-600 block group-hover:text-indigo-600 transition-colors">Arrastra fotos aquí o haz clic para subir</span>
-                        <span className="text-[9px] text-slate-400 block mt-0.5">Soporta JPG, PNG de stock en simultáneo (Simulación dinámica)</span>
-                      </div>
+                        const response = await fetch('/api/upload-cloudinary', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ image: base64 })
+                        });
 
-                      {/* Interactive Live Gallery previews */}
-                      {(() => {
-                        const prim = newArticle.imagen_url;
-                        const secs = newArticle.imagenes ? newArticle.imagenes.split(',').map(u => u.trim()).filter(Boolean) : [];
-                        const totalCount = (prim ? 1 : 0) + secs.length;
-
-                        if (totalCount === 0) {
-                          return (
-                            <div className="text-center py-4 text-slate-400 text-xs font-medium bg-white rounded-xl border border-dashed border-slate-200">
-                              No hay ninguna foto asociada al artículo todavía.
-                            </div>
-                          );
+                        if (!response.ok) {
+                          const errData = await response.json().catch(() => ({}));
+                          throw new Error(errData.error || `Error ${response.status} en la subida.`);
                         }
 
-                        return (
-                          <div className="space-y-2 mt-1">
-                            <span className="text-[10px] font-bold text-slate-600 block uppercase tracking-wide">Previsualización Activa de Fotos ({totalCount}):</span>
-                            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                              {/* Portada Principal */}
-                              {prim && (
-                                <div className="border-2 border-indigo-500 rounded-xl overflow-hidden bg-white relative group h-28 shadow-sm">
-                                  <img src={prim} alt="Principal" referrerPolicy="no-referrer" className="w-full h-full object-cover" />
-                                  <span className="absolute top-1.5 left-1.5 bg-indigo-650 text-white font-extrabold text-[8px] uppercase px-1.5 py-0.5 rounded shadow-sm">Portada principal</span>
-                                  <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-all p-1 gap-1">
-                                    <button
-                                      type="button"
-                                      onClick={() => {
-                                        setNewArticle(prev => {
-                                          let secList = prev.imagenes ? prev.imagenes.split(',').map(x => x.trim()).filter(Boolean) : [];
-                                          const nextPrim = secList.shift() || '';
-                                          return {
-                                            ...prev,
-                                            imagen_url: nextPrim,
-                                            imagenes: secList.join(', ')
-                                          };
-                                        });
-                                      }}
-                                      className="bg-red-500 hover:bg-red-600 text-white font-bold text-[9px] py-1 px-2 rounded-lg cursor-pointer transition-colors"
-                                    >
-                                      Eliminar
-                                    </button>
-                                  </div>
-                                </div>
-                              )}
+                        const data = await response.json();
+                        if (data.url) {
+                          uploadedUrls.push(data.url);
+                        }
+                      }
+                      if (uploadedUrls.length > 0) {
+                        updateImages([...combinedImages, ...uploadedUrls]);
+                      }
+                    } catch (error: any) {
+                      console.error("Error subiendo imágenes a Cloudinary:", error);
+                      alert(`Error al subir imágenes: ${error.message || error}`);
+                    } finally {
+                      setIsUploadingImages(false);
+                    }
+                  };
 
-                              {/* Secundarias */}
-                              {secs.map((sec, sIdx) => (
-                                <div key={`sec_gallery_item_${sIdx}`} className="border border-slate-200 rounded-xl overflow-hidden bg-white relative group h-28">
-                                  <img src={sec} alt={`Secundaria ${sIdx}`} referrerPolicy="no-referrer" className="w-full h-full object-cover" />
-                                  <span className="absolute top-1.5 left-1.5 bg-slate-700 text-white font-bold text-[8px] uppercase px-1.5 py-0.5 rounded shadow-sm">Galería</span>
-                                  <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 flex flex-col items-center justify-center transition-all p-1 gap-1.5">
-                                    <button
-                                      type="button"
-                                      onClick={() => {
-                                        setNewArticle(prev => {
-                                          const oldPrim = prev.imagen_url;
-                                          const currentSecs = prev.imagenes ? prev.imagenes.split(',').map(x => x.trim()).filter(Boolean) : [];
-                                          const filteredSecs = currentSecs.filter(u => u !== sec);
-                                          if (oldPrim) {
-                                            filteredSecs.push(oldPrim);
-                                          }
-                                          return {
-                                            ...prev,
-                                            imagen_url: sec,
-                                            imagenes: filteredSecs.join(', ')
-                                          };
-                                        });
-                                      }}
-                                      className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-[8px] py-1 px-2 rounded-lg cursor-pointer transition-colors w-[85%] text-center uppercase"
-                                    >
-                                      Destacar Portada
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={() => {
-                                        setNewArticle(prev => {
-                                          const currentSecs = prev.imagenes ? prev.imagenes.split(',').map(x => x.trim()).filter(Boolean) : [];
-                                          const filteredSecs = currentSecs.filter(u => u !== sec);
-                                          return {
-                                            ...prev,
-                                            imagenes: filteredSecs.join(', ')
-                                          };
-                                        });
-                                      }}
-                                      className="bg-red-500 hover:bg-red-650 text-white font-bold text-[8px] py-0.5 px-2 rounded-lg cursor-pointer transition-colors w-[85%] text-center uppercase"
-                                    >
-                                      Eliminar
-                                    </button>
-                                  </div>
-                                </div>
-                              ))}
-                            </div>
+                  const handleAddUrl = () => {
+                    if (!inputImageUrlText.trim()) return;
+                    const url = inputImageUrlText.trim();
+                    if (!combinedImages.includes(url)) {
+                      updateImages([...combinedImages, url]);
+                    }
+                    setInputImageUrlText('');
+                  };
+
+                  return (
+                    <div className="space-y-4 animate-fade-in font-sans">
+                      <div className="bg-slate-50 border border-slate-200/60 rounded-2xl p-4.5 space-y-4">
+                        <div className="flex items-center justify-between border-b border-slate-200/60 pb-2">
+                          <div>
+                            <h4 className="text-xs font-bold text-slate-805">Galería Fotográfica del Producto (Cloudinary)</h4>
+                            <p className="text-[10px] text-slate-400">Las fotos se guardan en Cloudinary. Arrastra las imágenes para reordenar la galería.</p>
                           </div>
-                        );
-                      })()}
+                          <span className="text-[9px] font-bold bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded border border-emerald-200">CLOUDINARY ACTIVO</span>
+                        </div>
+
+                        {/* Agregar URL de Fotos */}
+                        <div className="space-y-2">
+                          <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">Añadir foto por link/URL</label>
+                          <div className="flex gap-2">
+                            <input
+                              type="url"
+                              value={inputImageUrlText}
+                              onChange={(e) => setInputImageUrlText(e.target.value)}
+                              placeholder="Pegar enlace de imagen aquí (https://example.com/imagen.jpg)..."
+                              className="flex-1 bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs focus:ring-2 focus:ring-indigo-500 focus:outline-none font-medium text-slate-800"
+                            />
+                            <button
+                              type="button"
+                              onClick={handleAddUrl}
+                              className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold transition-all shadow-sm active:scale-95"
+                            >
+                              Añadir URL
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Hidden Real File Input */}
+                        <input
+                          type="file"
+                          multiple
+                          accept="image/*"
+                          className="hidden"
+                          id="cloudinary-file-uploader"
+                          onChange={(e) => handleCloudinaryUpload(e.target.files)}
+                        />
+
+                        {/* Drag and Drop Zone */}
+                        <div
+                          onDragOver={(e) => {
+                            e.preventDefault();
+                            setDragOverImages(true);
+                          }}
+                          onDragLeave={() => {
+                            setDragOverImages(false);
+                          }}
+                          onDrop={(e) => {
+                            e.preventDefault();
+                            setDragOverImages(false);
+                            const files = e.dataTransfer.files;
+                            if (files && files.length > 0) {
+                              handleCloudinaryUpload(files);
+                            }
+                          }}
+                          onClick={() => {
+                            document.getElementById('cloudinary-file-uploader')?.click();
+                          }}
+                          className={`border-2 border-dashed rounded-xl p-6 text-center cursor-pointer transition-all duration-300 group ${
+                            dragOverImages 
+                              ? 'border-indigo-500 bg-indigo-50/50 scale-[1.01]' 
+                              : 'border-slate-200 bg-white hover:bg-slate-50'
+                          }`}
+                        >
+                          {isUploadingImages ? (
+                            <div className="space-y-2 py-2">
+                              <div className="w-8 h-8 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin mx-auto"></div>
+                              <span className="text-xs font-bold text-indigo-700 block transition-colors">Sincronizando fotos con Cloudinary...</span>
+                            </div>
+                          ) : (
+                            <div className="space-y-1">
+                              <span className="text-2xl block mb-1">☁️</span>
+                              <span className="text-xs font-bold text-slate-600 block group-hover:text-indigo-600 transition-colors">
+                                Arrastra tus fotos aquí o haz clic para subir
+                              </span>
+                              <span className="text-[10px] text-slate-400 block mt-0.5">
+                                Subida directa a Cloudinary con ordenamiento interactivo
+                              </span>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Interactive Re-orderable live gallery */}
+                        <div className="space-y-3">
+                          <div className="flex justify-between items-center">
+                            <span className="text-[10px] font-bold text-slate-600 block uppercase tracking-wide">
+                              Orden de la Galería de Fotos ({combinedImages.length})
+                            </span>
+                            {combinedImages.length > 0 && (
+                              <span className="text-[9px] text-indigo-600 font-medium bg-indigo-50 px-2 py-0.5 rounded-full animate-pulse">
+                                ↔ Arrastra las fotos para cambiar su orden
+                              </span>
+                            )}
+                          </div>
+
+                          {combinedImages.length === 0 ? (
+                            <div className="text-center py-6 text-slate-400 text-xs font-medium bg-white rounded-xl border border-dashed border-slate-200">
+                              No hay ninguna foto asociada al artículo todavía.
+                            </div>
+                          ) : (
+                            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3.5 pt-1">
+                              {combinedImages.map((img, idx) => {
+                                const isFirst = idx === 0;
+                                return (
+                                  <div
+                                    key={`draggable_img_${idx}`}
+                                    draggable
+                                    onDragStart={(e) => {
+                                      e.dataTransfer.setData('text/plain', String(idx));
+                                      setDraggedImgIndex(idx);
+                                    }}
+                                    onDragOver={(e) => e.preventDefault()}
+                                    onDrop={(e) => {
+                                      e.preventDefault();
+                                      const fromIndexStr = e.dataTransfer.getData('text/plain');
+                                      const fromIndex = parseInt(fromIndexStr, 10);
+                                      if (isNaN(fromIndex) || fromIndex === idx) return;
+
+                                      const updated = [...combinedImages];
+                                      const [removed] = updated.splice(fromIndex, 1);
+                                      updated.splice(idx, 0, removed);
+                                      updateImages(updated);
+                                      setDraggedImgIndex(null);
+                                    }}
+                                    onDragEnd={() => setDraggedImgIndex(null)}
+                                    className={`relative group h-28 rounded-xl overflow-hidden border bg-slate-50 select-none cursor-grab active:cursor-grabbing transition-all ${
+                                      isFirst 
+                                        ? 'border-indigo-500 ring-2 ring-indigo-500/30' 
+                                        : 'border-slate-200 hover:border-slate-300'
+                                    } ${draggedImgIndex === idx ? 'opacity-40 scale-95' : ''}`}
+                                  >
+                                    <img src={img} alt={`Foto ${idx}`} referrerPolicy="no-referrer" className="w-full h-full object-cover pointer-events-none" />
+                                    
+                                    {isFirst ? (
+                                      <span className="absolute top-1.5 left-1.5 bg-indigo-600 text-white font-extrabold text-[8px] uppercase px-1.5 py-0.5 rounded shadow-sm z-10">
+                                        ⭐ PORTADA PRINCIPAL
+                                      </span>
+                                    ) : (
+                                      <span className="absolute top-1.5 left-1.5 bg-slate-700/80 text-white font-medium text-[8px] uppercase px-1.5 py-0.5 rounded shadow-sm z-10">
+                                        Foto {idx + 1}
+                                      </span>
+                                    )}
+
+                                    {/* Action overlays on hover */}
+                                    <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 flex flex-col items-center justify-center transition-all p-1.5 gap-1.5 z-20">
+                                      {!isFirst && (
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            const updated = [...combinedImages];
+                                            const [removed] = updated.splice(idx, 1);
+                                            updated.unshift(removed); // make it first
+                                            updateImages(updated);
+                                          }}
+                                          className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-[8px] py-1 px-1.5 rounded-lg cursor-pointer transition-colors w-[90%] text-center uppercase"
+                                        >
+                                          Hacer Principal
+                                        </button>
+                                      )}
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          const updated = combinedImages.filter((_, i) => i !== idx);
+                                          updateImages(updated);
+                                        }}
+                                        className="bg-red-500 hover:bg-red-600 text-white font-bold text-[8px] py-1 px-1.5 rounded-lg cursor-pointer transition-colors w-[90%] text-center uppercase"
+                                      >
+                                        Eliminar
+                                      </button>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      </div>
                     </div>
-                  </div>
-                )}
+                  );
+                })()}
 
                 {/* Step 4: Variantes y Control */}
                 {newArticleStep === 4 && (
@@ -11955,7 +12078,6 @@ export default function App() {
                                   key={`b_sz_preset_${sPreset}`}
                                   onClick={() => {
                                     setVarSize(sPreset);
-                                    setVarSku(`${newArticle.codigo || getNextAvailableSku()}-${sPreset}`);
                                   }}
                                   className={`px-2.5 py-1 text-[11px] font-bold rounded-lg border transition-all cursor-pointer ${
                                     isSelected
@@ -12006,92 +12128,144 @@ export default function App() {
                         </div>
                       </div>
 
+                      {/* Picker de fotos secundarias del Paso 3 */}
+                      {(() => {
+                        const secondaryImages = newArticle.imagenes
+                          ? newArticle.imagenes.split(',').map(s => s.trim()).filter(Boolean)
+                          : [];
+                        if (secondaryImages.length === 0) return null;
+                        return (
+                          <div className="space-y-1.5 p-3.5 bg-white rounded-xl border border-slate-200">
+                            <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">Asignar Foto a esta Variante (Paso 3):</span>
+                            <div className="flex flex-wrap gap-2">
+                              {secondaryImages.map((imgUrl, imgIdx) => {
+                                const isSelected = varImageUrl === imgUrl;
+                                return (
+                                  <button
+                                    type="button"
+                                    key={`v_img_select_${imgIdx}`}
+                                    onClick={() => setVarImageUrl(imgUrl)}
+                                    className={`relative w-11 h-11 rounded-lg overflow-hidden border-2 transition-all cursor-pointer ${
+                                      isSelected ? 'border-indigo-600 ring-2 ring-indigo-100' : 'border-slate-200 opacity-60 hover:opacity-100'
+                                    }`}
+                                  >
+                                    <img src={imgUrl} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                                    {isSelected && (
+                                      <div className="absolute inset-0 bg-indigo-600/10 flex items-center justify-center">
+                                        <div className="bg-indigo-600 text-white rounded-full p-0.5">
+                                          <Check className="w-2.5 h-2.5 text-white stroke-[3.5px]" />
+                                        </div>
+                                      </div>
+                                    )}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                            <p className="text-[9px] text-slate-400">Selecciona una de las fotos secundarias subidas en el Paso 3 para esta variante. No se incluye la foto principal.</p>
+                          </div>
+                        );
+                      })()}
+
                       {/* Manual input for adding the variants */}
-                      <div className="grid grid-cols-2 md:grid-cols-5 gap-2 items-end bg-white p-3 rounded-xl border border-slate-200">
-                        <div className="space-y-1">
-                          <span className="text-[9px] font-bold text-slate-450 uppercase block">Talle</span>
-                          <input
-                            type="text"
-                            value={varSize}
-                            onChange={(e) => setVarSize(e.target.value)}
-                            placeholder="Ej: M"
-                            className="w-full bg-slate-50 border border-slate-200 rounded-lg px-2 py-1 text-xs text-slate-800 font-bold"
-                          />
-                        </div>
-                        <div className="space-y-1">
-                          <span className="text-[9px] font-bold text-slate-450 uppercase block">Color</span>
-                          <input
-                            type="text"
-                            value={varColor}
-                            onChange={(e) => setVarColor(e.target.value)}
-                            placeholder="Ej: Negro"
-                            className="w-full bg-slate-50 border border-slate-200 rounded-lg px-2 py-1 text-xs text-slate-800 font-bold"
-                          />
-                        </div>
-                        <div className="space-y-1">
-                          <span className="text-[9px] font-bold text-slate-450 uppercase block">Stock</span>
-                          <input
-                            type="number"
-                            min="0"
-                            value={varStock}
-                            onChange={(e) => setVarStock(e.target.value)}
-                            className="w-full bg-slate-50 border border-slate-200 rounded-lg px-2 py-1 text-xs text-slate-800 font-mono text-center font-bold"
-                          />
-                        </div>
-                        <div className="space-y-1">
-                          <span className="text-[9px] font-bold text-slate-450 uppercase block">SKU Variante</span>
-                          <input
-                            type="text"
-                            value={varSku}
-                            onChange={(e) => setVarSku(e.target.value)}
-                            placeholder="SKU"
-                            className="w-full bg-slate-50 border border-slate-200 rounded-lg px-2 py-1 text-xs text-slate-755 font-mono text-center"
-                          />
-                        </div>
-                        <div className="col-span-2 md:col-span-1">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const sz = varSize.trim() || 'Único';
-                              const col = varColor.trim() || 'Base';
-                              const stockNum = Number(varStock || 0);
-                              const computedSku = varSku.trim() || `${newArticle.codigo || getNextAvailableSku()}-${sz}`;
-                              
-                              try {
-                                let list = JSON.parse(newArticle.variants || '[]');
-                                // Check if variant already exists
-                                const duplicate = list.some((v: any) => v.attributes?.talle === sz && v.attributes?.color === col);
-                                if (duplicate) {
-                                  alert('Esta variante ya existe en la lista.');
-                                  return;
-                                }
-                                list.push({
-                                  attributes: {
-                                    talle: sz,
-                                    color: col,
-                                    ...(varColorCode ? { colorCode: varColorCode } : {})
-                                  },
-                                  stock: stockNum,
-                                  price: String(Math.round(calculatedWebFaceInstaPrice) || '0'),
-                                  sku: computedSku
-                                });
-                                setNewArticle(prev => ({ ...prev, variants: JSON.stringify(list, null, 2) }));
-                                // Reset fields
-                                setVarSize('');
-                                setVarColor('');
-                                setVarColorCode('');
-                                setVarStock('10');
-                                setVarSku('');
-                              } catch (err) {
-                                alert('Error al procesar el JSON de variantes');
-                              }
-                            }}
-                            className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold text-[10px] py-1.5 rounded-lg cursor-pointer transition-colors uppercase text-center"
-                          >
-                            + Guardar
-                          </button>
-                        </div>
-                      </div>
+                      {(() => {
+                        let parsedList: any[] = [];
+                        try {
+                          parsedList = JSON.parse(newArticle.variants || '[]');
+                        } catch (e) {}
+                        const consecutiveSku = getVariantSku(parsedList.length);
+
+                        return (
+                          <div className="grid grid-cols-2 md:grid-cols-5 gap-2 items-end bg-white p-3 rounded-xl border border-slate-200">
+                            <div className="space-y-1">
+                              <span className="text-[9px] font-bold text-slate-450 uppercase block">Talle</span>
+                              <input
+                                type="text"
+                                value={varSize}
+                                onChange={(e) => setVarSize(e.target.value)}
+                                placeholder="Ej: M"
+                                className="w-full bg-slate-50 border border-slate-200 rounded-lg px-2 py-1 text-xs text-slate-800 font-bold"
+                              />
+                            </div>
+                            <div className="space-y-1">
+                              <span className="text-[9px] font-bold text-slate-450 uppercase block">Color</span>
+                              <input
+                                type="text"
+                                value={varColor}
+                                onChange={(e) => setVarColor(e.target.value)}
+                                placeholder="Ej: Negro"
+                                className="w-full bg-slate-50 border border-slate-200 rounded-lg px-2 py-1 text-xs text-slate-800 font-bold"
+                              />
+                            </div>
+                            <div className="space-y-1">
+                              <span className="text-[9px] font-bold text-slate-450 uppercase block">Stock</span>
+                              <input
+                                type="number"
+                                min="0"
+                                value={varStock}
+                                onChange={(e) => setVarStock(e.target.value)}
+                                className="w-full bg-slate-50 border border-slate-200 rounded-lg px-2 py-1 text-xs text-slate-800 font-mono text-center font-bold"
+                              />
+                            </div>
+                            <div className="space-y-1">
+                              <div className="flex justify-between items-center">
+                                <span className="text-[9px] font-bold text-slate-450 uppercase block">SKU Variante</span>
+                                <span className="text-[8px] text-indigo-500 font-bold uppercase">Correlativo</span>
+                              </div>
+                              <input
+                                type="text"
+                                readOnly
+                                value={consecutiveSku}
+                                title="Calculado de manera única consecutiva por el sistema"
+                                className="w-full bg-slate-100 border border-slate-200 rounded-lg px-2 py-1 text-xs text-indigo-650 font-mono text-center font-extrabold cursor-not-allowed"
+                              />
+                            </div>
+                            <div className="col-span-2 md:col-span-1">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const sz = varSize.trim() || 'Único';
+                                  const col = varColor.trim() || 'Base';
+                                  const stockNum = Number(varStock || 0);
+                                  const computedSku = consecutiveSku;
+                                  
+                                  try {
+                                    let list = JSON.parse(newArticle.variants || '[]');
+                                    // Check if variant already exists
+                                    const duplicate = list.some((v: any) => v.attributes?.talle === sz && v.attributes?.color === col);
+                                    if (duplicate) {
+                                      alert('Esta variante ya existe en la lista.');
+                                      return;
+                                    }
+                                    list.push({
+                                      attributes: {
+                                        talle: sz,
+                                        color: col,
+                                        ...(varColorCode ? { colorCode: varColorCode } : {})
+                                      },
+                                      stock: stockNum,
+                                      price: String(Math.round(calculatedWebFaceInstaPrice) || '0'),
+                                      sku: computedSku,
+                                      imagen_url: varImageUrl || ''
+                                    });
+                                    setNewArticle(prev => ({ ...prev, variants: JSON.stringify(list, null, 2) }));
+                                    // Reset fields
+                                    setVarSize('');
+                                    setVarColor('');
+                                    setVarColorCode('');
+                                    setVarStock('10');
+                                    setVarImageUrl('');
+                                  } catch (err) {
+                                    alert('Error al procesar el JSON de variantes');
+                                  }
+                                }}
+                                className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold text-[10px] py-1.5 rounded-lg cursor-pointer transition-colors uppercase text-center focus:ring-2 focus:ring-indigo-300 focus:outline-none"
+                              >
+                                + Guardar
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })()}
 
                       {/* Active Grid Variant Table Manager */}
                       {(() => {
@@ -12107,36 +12281,30 @@ export default function App() {
 
                           return (
                             <div className="bg-white rounded-xl border border-slate-200 overflow-hidden mt-1">
-                              <div className="bg-slate-100/70 p-2 text-[9px] font-extrabold uppercase tracking-wide text-slate-500 border-b border-slate-200 grid grid-cols-12 text-center">
-                                <span className="col-span-3 text-left pl-2">Variante</span>
-                                <span className="col-span-3">SKU Integrable</span>
+                              <div className="bg-slate-150/40 p-2 text-[9px] font-extrabold uppercase tracking-wide text-slate-500 border-b border-slate-200 grid grid-cols-12 text-center items-center">
+                                <span className="col-span-4 text-left pl-2">Foto / Variante</span>
+                                <span className="col-span-3">SKU Correlativo</span>
                                 <span className="col-span-2">Stock</span>
                                 <span className="col-span-2">Precio ($)</span>
-                                <span className="col-span-2">Borrar</span>
+                                <span className="col-span-1">Borrar</span>
                               </div>
                               <div className="divide-y divide-slate-100 max-h-[190px] overflow-y-auto">
                                 {parsedList.map((variant: any, idx: number) => (
                                   <div key={`variant_item_${idx}`} className="p-2 text-xs grid grid-cols-12 items-center text-center hover:bg-slate-50/50">
-                                    <div className="col-span-3 text-left pl-2 font-bold text-slate-700 flex items-center gap-1.5">
-                                      {variant.attributes?.colorCode && (
-                                        <span className="w-2.5 h-2.5 rounded-full border border-slate-300 shrink-0" style={{ backgroundColor: variant.attributes.colorCode }}></span>
+                                    <div className="col-span-4 text-left pl-2 font-bold text-slate-705 flex items-center gap-2">
+                                      {variant.imagen_url ? (
+                                        <img src={variant.imagen_url} className="w-7 h-7 rounded object-cover border border-slate-200 flex-shrink-0" referrerPolicy="no-referrer" />
+                                      ) : (
+                                        <div className="w-7 h-7 rounded bg-slate-100 border border-slate-200 flex items-center justify-center flex-shrink-0">
+                                          <ImageIcon className="w-3.5 h-3.5 text-slate-400" />
+                                        </div>
                                       )}
-                                      <span className="truncate">{variant.attributes?.talle || 'U'} / {variant.attributes?.color || 'Base'}</span>
+                                      <div className="flex flex-col min-w-0">
+                                        <span className="truncate font-bold text-slate-800 text-[11px]">{variant.attributes?.talle || 'U'} / {variant.attributes?.color || 'Base'}</span>
+                                      </div>
                                     </div>
-                                    <div className="col-span-3">
-                                      <input
-                                        type="text"
-                                        value={variant.sku || ''}
-                                        onChange={(e) => {
-                                          const val = e.target.value;
-                                          try {
-                                            const current = JSON.parse(newArticle.variants || '[]');
-                                            current[idx].sku = val;
-                                            setNewArticle(prev => ({ ...prev, variants: JSON.stringify(current, null, 2) }));
-                                          } catch (err) {}
-                                        }}
-                                        className="w-[90%] mx-auto bg-slate-50 text-slate-700 text-[10px] font-mono border border-slate-200 rounded px-1 py-0.5 text-center"
-                                      />
+                                    <div className="col-span-3 font-mono font-bold text-indigo-650 bg-indigo-50 px-2 py-0.5 rounded text-[11px] w-[85%] mx-auto">
+                                      {variant.sku}
                                     </div>
                                     <div className="col-span-2">
                                       <input
@@ -12150,7 +12318,7 @@ export default function App() {
                                             setNewArticle(prev => ({ ...prev, variants: JSON.stringify(current, null, 2) }));
                                           } catch (err) {}
                                         }}
-                                        className="w-[70%] mx-auto bg-slate-50 text-slate-750 font-mono border border-slate-200 rounded px-1 py-0.5 text-center"
+                                        className="w-[70%] mx-auto bg-slate-50 text-slate-750 font-mono border border-slate-200 rounded px-1 py-0.5 text-center font-bold"
                                       />
                                     </div>
                                     <div className="col-span-2">
@@ -12165,10 +12333,10 @@ export default function App() {
                                             setNewArticle(prev => ({ ...prev, variants: JSON.stringify(current, null, 2) }));
                                           } catch (err) {}
                                         }}
-                                        className="w-[80%] mx-auto bg-emerald-50/60 font-mono border border-emerald-150 rounded px-1 py-0.5 text-center text-emerald-850 font-bold"
+                                        className="w-[80%] mx-auto bg-emerald-50/65 font-mono border border-emerald-150 rounded px-1 py-0.5 text-center text-emerald-850 font-extrabold"
                                       />
                                     </div>
-                                    <div className="col-span-2">
+                                    <div className="col-span-1">
                                       <button
                                         type="button"
                                         onClick={() => {
@@ -12178,7 +12346,7 @@ export default function App() {
                                             setNewArticle(prev => ({ ...prev, variants: JSON.stringify(filtered, null, 2) }));
                                           } catch (err) {}
                                         }}
-                                        className="text-red-500 hover:text-red-700 cursor-pointer font-bold text-[10px]"
+                                        className="text-red-500 hover:text-red-700 cursor-pointer font-bold text-xs"
                                       >
                                         🗑️
                                       </button>
