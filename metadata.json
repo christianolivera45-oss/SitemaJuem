@@ -1,0 +1,6 @@
+{
+  "name": "Sistema Juem",
+  "description": "JUEMHub administratrive dashboard and inventory control web app connected to Google Sheets.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
