@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { apiFetch as fetch } from './api';
+import { safeStorage } from './storage';
 import { ArqueoCajaView } from './components/ArqueoCajaView';
 import { LoginScreen } from './components/LoginScreen';
 import { UsuariosView } from './components/UsuariosView';
@@ -50,7 +51,8 @@ import {
   Calculator,
   Filter,
   BookOpen,
-  Pin
+  Pin,
+  Receipt
 } from 'lucide-react';
 
 interface Article {
@@ -165,11 +167,23 @@ function matchAdvancedSearch(fields: (string | undefined | null)[], query: strin
   );
 }
 
+// Robust JSON parse utility to prevent any runtime UI crashes
+function safeJsonParse(val: any, fallback: any = []): any {
+  if (val === null || val === undefined) return fallback;
+  if (typeof val !== 'string') return val;
+  try {
+    return JSON.parse(val);
+  } catch (err) {
+    console.warn("safeJsonParse: failed to parse JSON string. Value was:", val, err);
+    return fallback;
+  }
+}
+
 export default function App() {
   // Session Authentication State
-  const [sessionToken, setSessionToken] = useState<string | null>(() => localStorage.getItem('juem_session_token'));
+  const [sessionToken, setSessionToken] = useState<string | null>(() => safeStorage.getItem('juem_session_token'));
   const [sessionUser, setSessionUser] = useState<{ id: number; usuario: string; rol: string; sucursal: string; secciones?: string } | null>(() => {
-    const cached = localStorage.getItem('juem_session_user');
+    const cached = safeStorage.getItem('juem_session_user');
     try {
       return cached ? JSON.parse(cached) : null;
     } catch {
@@ -178,7 +192,7 @@ export default function App() {
   });
 
   // Collapsible sidebar states
-  const [isSidebarPinned, setIsSidebarPinned] = useState(() => localStorage.getItem('sidebar_pinned') === 'true');
+  const [isSidebarPinned, setIsSidebarPinned] = useState(() => safeStorage.getItem('sidebar_pinned') === 'true');
   const [isSidebarHovered, setIsSidebarHovered] = useState(false);
   const [isMobile, setIsMobile] = useState(() => typeof window !== 'undefined' && window.innerWidth < 768);
 
@@ -195,12 +209,12 @@ export default function App() {
   const toggleSidebarPin = () => {
     const newVal = !isSidebarPinned;
     setIsSidebarPinned(newVal);
-    localStorage.setItem('sidebar_pinned', String(newVal));
+    safeStorage.setItem('sidebar_pinned', String(newVal));
   };
 
   const handleLoginSuccess = (token: string, user: { id: number; usuario: string; rol: string; sucursal: string; secciones?: string }) => {
-    localStorage.setItem('juem_session_token', token);
-    localStorage.setItem('juem_session_user', JSON.stringify(user));
+    safeStorage.setItem('juem_session_token', token);
+    safeStorage.setItem('juem_session_user', JSON.stringify(user));
     setSessionToken(token);
     setSessionUser(user);
     
@@ -220,8 +234,8 @@ export default function App() {
   };
 
   const handleLogout = () => {
-    localStorage.removeItem('juem_session_token');
-    localStorage.removeItem('juem_session_user');
+    safeStorage.removeItem('juem_session_token');
+    safeStorage.removeItem('juem_session_user');
     setSessionToken(null);
     setSessionUser(null);
     setActiveTab('stock');
@@ -417,7 +431,7 @@ export default function App() {
   };
 
   const handlePrintTransfer = (tr: any) => {
-    const items = Array.isArray(tr.detalles) ? tr.detalles : JSON.parse(tr.detalles || '[]');
+    const items = Array.isArray(tr.detalles) ? tr.detalles : safeJsonParse(tr.detalles);
     const totalUnits = items.reduce((sum: number, it: any) => sum + Number(it.cantidad || 0), 0);
     const dateStr = new Date(tr.fecha).toLocaleString('es-UY', {
       day: '2-digit',
@@ -569,7 +583,7 @@ export default function App() {
       setEditTransferDate(new Date().toISOString().slice(0, 16));
     }
 
-    const itemsRaw = Array.isArray(tr.detalles) ? tr.detalles : JSON.parse(tr.detalles || '[]');
+    const itemsRaw = Array.isArray(tr.detalles) ? tr.detalles : safeJsonParse(tr.detalles);
     const mappedCart = itemsRaw.map((it: any) => ({
       article: {
         id: Number(it.articulo_id),
@@ -1033,7 +1047,7 @@ export default function App() {
     Mvd: { nombre: string; direccion: string; contacto: string };
     Pin: { nombre: string; direccion: string; contacto: string };
   }>(() => {
-    const saved = localStorage.getItem('juem_sender_config_v2');
+    const saved = safeStorage.getItem('juem_sender_config_v2');
     if (saved) {
       try {
         return JSON.parse(saved);
@@ -1107,7 +1121,8 @@ export default function App() {
   const [varSize, setVarSize] = useState('');
   const [varColor, setVarColor] = useState('');
   const [varColorCode, setVarColorCode] = useState('');
-  const [varStock, setVarStock] = useState('10');
+  const [varStockMvd, setVarStockMvd] = useState('0');
+  const [varStockPin, setVarStockPin] = useState('0');
   const [varImageUrl, setVarImageUrl] = useState('');
   const [varSku, setVarSku] = useState('');
 
@@ -1141,18 +1156,33 @@ export default function App() {
   });
 
   const getRecommendedSku = (sz: string, col: string) => {
-    const parentCode = newArticle.codigo || '';
-    const s = sz.trim();
-    const c = col.trim();
-    if (s && c) return `${parentCode}-${s}-${c}`;
-    if (s) return `${parentCode}-${s}`;
-    if (c) return `${parentCode}-${c}`;
-    return parentCode;
+    const parentCode = (newArticle.codigo || '').trim();
+    let currentCount = 0;
+    try {
+      currentCount = JSON.parse(newArticle.variants || '[]').length;
+    } catch (e) {}
+
+    // El primer artículo toma el SKU exacto de la plantilla base (ej: J112)
+    if (currentCount === 0) {
+      return parentCode;
+    }
+
+    // Para las siguientes variantes, incrementamos la parte numérica para crear artículos independientes correlativos (J112, J113, J114...)
+    const match = parentCode.match(/^(.*?)(\d+)$/);
+    if (match) {
+      const prefix = match[1];
+      const numberStr = match[2];
+      const val = parseInt(numberStr, 10) + currentCount;
+      const padded = String(val).padStart(numberStr.length, '0');
+      return prefix + padded;
+    }
+
+    return `${parentCode}-${currentCount + 1}`;
   };
 
   useEffect(() => {
     setVarSku(getRecommendedSku(varSize, varColor));
-  }, [varSize, varColor, newArticle.codigo]);
+  }, [varSize, varColor, newArticle.codigo, newArticle.variants]);
   const [articleSuccess, setArticleSuccess] = useState('');
   const [articleError, setArticleError] = useState('');
 
@@ -1167,7 +1197,10 @@ export default function App() {
   const [gastoCategoryFilter, setGastoCategoryFilter] = useState('Todas');
 
   // --- Dashboard Gerencial & Analytic States ---
-  const [mandoSubTab, setMandoSubTab] = useState<'summary' | 'rentabilidad' | 'alertas'>('summary');
+  const [mandoSubTab, setMandoSubTab] = useState<'summary' | 'rentabilidad' | 'alertas' | 'gastos_compras'>('summary');
+  const [mandoGastosMonthFilter, setMandoGastosMonthFilter] = useState<string>('CURRENT_MONTH');
+  const [mandoGastosSearch, setMandoGastosSearch] = useState<string>('');
+  const [expandedDashboardOutlayId, setExpandedDashboardOutlayId] = useState<string | null>(null);
   const [mandoSucursalFilter, setMandoSucursalFilter] = useState<'ALL' | 'Mvd' | 'Pin'>('ALL');
   const [criticalStockLimit, setCriticalStockLimit] = useState<number>(5);
   const [rentabilidadSearch, setRentabilidadSearch] = useState('');
@@ -1345,19 +1378,19 @@ export default function App() {
     }
   };
 
-  const handleCreateArticleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleCreateArticleSubmit = async (e?: React.FormEvent, forceCreate: boolean = false) => {
+    if (e) e.preventDefault();
     setArticleError('');
     setArticleSuccess('');
 
     const now = Date.now();
-    if (now - lastStepChange < 650) {
+    if (!forceCreate && now - lastStepChange < 650) {
       console.log("Sometimiento de formulario bloqueado por clic doble rápido.");
       return;
     }
 
-    // Prevenir creación si no se llega al último paso (Paso 4 / Variantes y Control)
-    if (newArticleStep < 4) {
+    // Prevenir creación si no se llega al último paso (Paso 4 / Variantes y Control) unless forceCreate is true
+    if (!forceCreate && newArticleStep < 4) {
       if (newArticleStep === 1 && !newArticle.nombre.trim()) {
         setArticleError('El nombre del producto es obligatorio.');
         alert('Por favor, ingresa el nombre del artículo.');
@@ -1418,7 +1451,8 @@ export default function App() {
           categoria_id: newArticle.categoria_id,
           subcategoria_id: newArticle.subcategoria_id,
           imagenes: newArticle.imagenes,
-          variants: newArticle.variants
+          variants: newArticle.variants,
+          creador_sucursal: sessionUser?.sucursal || 'Pin'
         })
       });
 
@@ -1462,10 +1496,13 @@ export default function App() {
     }
   };
 
-  const handleDeleteArticle = async (id: number, forceNoPrompt = false) => {
+  const handleDeleteArticle = async (id: number, forceNoPrompt = false, codigo?: string) => {
     if (!forceNoPrompt && !window.confirm("¿Seguro que deseas eliminar este artículo de la base central?")) return;
     try {
-      const res = await fetch(`/api/articulos/${id}`, { method: 'DELETE' });
+      const url = codigo 
+        ? `/api/articulos/${id}?codigo=${encodeURIComponent(codigo)}` 
+        : `/api/articulos/${id}`;
+      const res = await fetch(url, { method: 'DELETE' });
       if (res.ok) {
         refreshSystemData();
         setShowDetailModal(false);
@@ -1530,7 +1567,7 @@ export default function App() {
     const generalPrice = mlVenta - commPct;
 
     try {
-      const res = await fetch(`/api/articulos/${selectedArticle.id}`, {
+      const res = await fetch(`/api/articulos/${selectedArticle.id}?codigo=${encodeURIComponent(selectedArticle.codigo)}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -2583,7 +2620,7 @@ export default function App() {
       })
       .filter((n): n is number => n !== null);
     if (numbers.length === 0) return "J104";
-    const maxNum = Math.max(...numbers);
+    const maxNum = numbers.reduce((max, val) => Math.max(max, val), 0);
     const nextNum = maxNum >= 100 ? maxNum + 1 : 104; // Ensure we go past J001-J005 towards J104+
     return `J${String(nextNum).padStart(3, '0')}`;
   };
@@ -2738,7 +2775,35 @@ export default function App() {
   const editCalculatedComisionMLAmount = editComisionPercentVal;
   const editCalculatedWebFaceInstaPrice = editEffectiveVentaML - editCalculatedComisionMLAmount;
 
+  // Collect all child variant SKUs in a Set to filter them from the main list.
+  // We only count a SKU as a child variant if it does NOT match the parent's own SKU,
+  // preventing parent articles from hiding themselves from the catalog and searches.
+  const variantSkusSet = new Set<string>();
+  catalog.forEach(art => {
+    if (art.variants) {
+      try {
+        const parsed = typeof art.variants === 'string' ? JSON.parse(art.variants) : art.variants;
+        if (Array.isArray(parsed)) {
+          const parentCode = (art.codigo || '').toLowerCase().trim();
+          parsed.forEach((v: any) => {
+            if (v.sku) {
+              const cleanedVariantSku = v.sku.toLowerCase().trim();
+              if (cleanedVariantSku && cleanedVariantSku !== parentCode) {
+                variantSkusSet.add(cleanedVariantSku);
+              }
+            }
+          });
+        }
+      } catch (e) {}
+    }
+  });
+
   const filteredCatalog = catalog.filter(c => {
+    // Hide variations from the top-level main index grid/list, so we only display 1 primary article with nested variants
+    if (c.codigo && variantSkusSet.has(c.codigo.toLowerCase().trim())) {
+      return false;
+    }
+
     // General search query (by product name or SKU/code)
     if (searchQuery.trim()) {
       const matchGeneral = matchAdvancedSearch([c.nombre, c.codigo], searchQuery);
@@ -3363,12 +3428,12 @@ export default function App() {
                           </td>
                         </tr>
                       ) : (
-                        paginatedCatalog.map((art) => {
+                        paginatedCatalog.map((art, idx) => {
                           const isSelected = selectedArticle?.id === art.id;
 
                           return (
                             <tr
-                              key={`cat_row_${art.id}`}
+                              key={`cat_row_${art.id}_${idx}`}
                               onClick={() => {
                                 setSelectedArticle(art);
                                 setIsEditingArticle(false);
@@ -3759,12 +3824,12 @@ export default function App() {
                   </div>
                 </div>
 
-                <div className="flex bg-slate-800 p-1 rounded-xl text-xs font-bold border border-slate-700/50 self-start lg:self-auto">
+                <div className="flex bg-slate-800 p-1 rounded-xl text-xs font-bold border border-slate-700/50 self-start lg:self-auto overflow-x-auto max-w-full">
                   <button
                     type="button"
                     id="btn-submando-summary"
                     onClick={() => setMandoSubTab('summary')}
-                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg cursor-pointer transition-all ${mandoSubTab === 'summary' ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-300 hover:text-white'}`}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg cursor-pointer transition-all shrink-0 ${mandoSubTab === 'summary' ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-300 hover:text-white'}`}
                   >
                     <TrendingUp className="w-3.5 h-3.5" />
                     <span>Resumen Gerencial</span>
@@ -3773,16 +3838,25 @@ export default function App() {
                     type="button"
                     id="btn-submando-rentabilidad"
                     onClick={() => setMandoSubTab('rentabilidad')}
-                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg cursor-pointer transition-all ${mandoSubTab === 'rentabilidad' ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-300 hover:text-white'}`}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg cursor-pointer transition-all shrink-0 ${mandoSubTab === 'rentabilidad' ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-300 hover:text-white'}`}
                   >
                     <Percent className="w-3.5 h-3.5" />
                     <span>Rentabilidad por Producto</span>
                   </button>
                   <button
                     type="button"
+                    id="btn-submando-gastos-compras"
+                    onClick={() => setMandoSubTab('gastos_compras')}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg cursor-pointer transition-all shrink-0 ${mandoSubTab === 'gastos_compras' ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-300 hover:text-white'}`}
+                  >
+                    <Receipt className="w-3.5 h-3.5" />
+                    <span>Gastos y Compras (Boletas)</span>
+                  </button>
+                  <button
+                    type="button"
                     id="btn-submando-alertas"
                     onClick={() => setMandoSubTab('alertas')}
-                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg cursor-pointer transition-all ${mandoSubTab === 'alertas' ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-300 hover:text-white'}`}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg cursor-pointer transition-all shrink-0 ${mandoSubTab === 'alertas' ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-300 hover:text-white'}`}
                   >
                     <AlertTriangle className={`w-3.5 h-3.5 ${outOfStockList.length > 0 || criticalStockRange.length > 0 ? 'text-amber-400 animate-pulse' : 'text-slate-300'}`} />
                     <span>Alertas y Reposición</span>
@@ -4297,6 +4371,385 @@ export default function App() {
                   </div>
                 </div>
               )}
+
+              {/* SUB-TAB 4: GASTOS Y COMPRAS DE BOLETAS / REPOSICIONES */}
+              {mandoSubTab === 'gastos_compras' && (() => {
+                // Safe year-month retriever to prevent date-parsing runtime errors
+                const safeGetYearMonth = (dateVal: any): string => {
+                  if (!dateVal) return '';
+                  try {
+                    const d = typeof dateVal === 'string' ? new Date(dateVal) : dateVal;
+                    if (d instanceof Date && !isNaN(d.getTime())) {
+                      return d.toISOString().substring(0, 7);
+                    }
+                    if (typeof dateVal === 'string' && dateVal.length >= 7) {
+                      return dateVal.substring(0, 7);
+                    }
+                    return '';
+                  } catch (e) {
+                    return '';
+                  }
+                };
+
+                // Determine available months in both datasets
+                const monthsSet = new Set<string>();
+                gastos.forEach(g => { if (g.fecha) { const m = safeGetYearMonth(g.fecha); if (m) monthsSet.add(m); } });
+                reposiciones.forEach(r => { if (r.fecha) { const m = safeGetYearMonth(r.fecha); if (m) monthsSet.add(m); } });
+                const filterMonths = Array.from(monthsSet).sort().reverse();
+
+                // Advanced metrics & KPIs
+                const filteredGastos = gastos.filter(g => {
+                  const gMonth = safeGetYearMonth(g.fecha);
+                  if (mandoGastosMonthFilter === 'CURRENT_MONTH') {
+                    if (gMonth !== currentYearMonth) return false;
+                  } else if (mandoGastosMonthFilter !== 'ALL') {
+                    if (gMonth !== mandoGastosMonthFilter) return false;
+                  }
+                  if (mandoGastosSearch.trim() !== '') {
+                    const q = mandoGastosSearch.toLowerCase();
+                    return (g.concepto || '').toLowerCase().includes(q) || (g.categoria || '').toLowerCase().includes(q);
+                  }
+                  return true;
+                });
+
+                const filteredRepos = reposiciones.filter(r => {
+                  if (mandoSucursalFilter !== 'ALL' && r.sucursal !== mandoSucursalFilter) return false;
+                  const rMonth = safeGetYearMonth(r.fecha);
+                  if (mandoGastosMonthFilter === 'CURRENT_MONTH') {
+                    if (rMonth !== currentYearMonth) return false;
+                  } else if (mandoGastosMonthFilter !== 'ALL') {
+                    if (rMonth !== mandoGastosMonthFilter) return false;
+                  }
+                  if (mandoGastosSearch.trim() !== '') {
+                    const q = mandoGastosSearch.toLowerCase();
+                    return (r.proveedor || '').toLowerCase().includes(q) || 
+                           (r.num_factura || '').toLowerCase().includes(q) || 
+                           (r.observaciones || '').toLowerCase().includes(q);
+                  }
+                  return true;
+                });
+
+                const totalGastosAmount = filteredGastos.reduce((sum, g) => sum + Number(g.monto || 0), 0);
+                const totalReposAmount = filteredRepos.reduce((sum, r) => sum + Number(r.total_factura || 0), 0);
+                const overallCombinedExpenses = totalGastosAmount + totalReposAmount;
+
+                // Group standard expenses by category
+                const expensesByCategory: Record<string, number> = {};
+                filteredGastos.forEach(g => {
+                  const cat = g.categoria || 'Otros Gastos';
+                  expensesByCategory[cat] = (expensesByCategory[cat] || 0) + Number(g.monto || 0);
+                });
+
+                // Group purchases by provider
+                const purchasesByProvider: Record<string, number> = {};
+                filteredRepos.forEach(r => {
+                  const prov = r.proveedor || 'Proveedor General';
+                  purchasesByProvider[prov] = (purchasesByProvider[prov] || 0) + Number(r.total_factura || 0);
+                });
+
+                // Standard combined historical timeline
+                const combinedTimeline = [
+                  ...filteredGastos.map(g => ({
+                    tipo: 'Gasto Operativo',
+                    id: `gasto-${g.id}`,
+                    fecha: g.fecha,
+                    concepto: g.concepto,
+                    categoria: g.categoria,
+                    monto: Number(g.monto || 0),
+                    sucursal: 'Global',
+                    proveedor: null,
+                    numFactura: null,
+                    detalles: null,
+                    observaciones: null
+                  })),
+                  ...filteredRepos.map(r => ({
+                    tipo: 'Compra Mercadería (Boleta)',
+                    id: `compra-${r.id}`,
+                    fecha: r.fecha,
+                    concepto: `Factura/Remito #${r.num_factura || 'S/N'} • Proveedor: ${r.proveedor || 'General'}`,
+                    categoria: 'Reposición de Inventario',
+                    monto: Number(r.total_factura || 0),
+                    sucursal: r.sucursal || 'Pin',
+                    proveedor: r.proveedor,
+                    numFactura: r.num_factura,
+                    detalles: r.detalles,
+                    observaciones: r.observaciones
+                  }))
+                ].sort((a, b) => new Date(b.fecha).getTime() - new Date(a.fecha).getTime());
+
+                return (
+                  <div className="space-y-6 animate-fade-in text-left">
+                    {/* Filter controls section inside matching visual language */}
+                    <div className="bg-white p-5 rounded-2xl border border-slate-200/85 shadow-2xs">
+                      <div className="flex flex-col md:flex-row items-center justify-between gap-4">
+                        <div className="text-left">
+                          <h3 className="text-xs font-bold uppercase tracking-wider text-slate-705">Explorador Analítico de Egresos y Compras</h3>
+                          <p className="text-[11px] text-slate-400">Inspeccione detalladamente gastos operativos y facturas de adquisición.</p>
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-3 w-full md:w-auto">
+                          {/* Search bar */}
+                          <div className="relative flex-1 md:flex-none min-w-[200px]">
+                            <Search className="absolute left-3 top-2.5 h-3.5 w-3.5 text-slate-400" />
+                            <input
+                              type="text"
+                              value={mandoGastosSearch}
+                              onChange={(e) => setMandoGastosSearch(e.target.value)}
+                              placeholder="Buscar proveedor, factura, concepto..."
+                              className="w-full bg-slate-50 border border-slate-200 rounded-xl pl-9 pr-4 py-2 text-xs text-slate-805 placeholder-slate-400 font-sans focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-white font-semibold transition-all text-left"
+                            />
+                            {mandoGastosSearch && (
+                              <button
+                                type="button"
+                                onClick={() => setMandoGastosSearch('')}
+                                className="absolute right-3 top-2.5 text-slate-400 hover:text-slate-600 text-xs font-bold cursor-pointer"
+                              >
+                                &times;
+                              </button>
+                            )}
+                          </div>
+
+                          {/* Month Filter */}
+                          <div className="flex items-center gap-1.5 ml-auto md:ml-0">
+                            <span className="text-[11px] font-bold text-slate-400 uppercase font-mono">Mes:</span>
+                            <select
+                              value={mandoGastosMonthFilter}
+                              onChange={(e) => setMandoGastosMonthFilter(e.target.value)}
+                              className="bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-2 text-xs font-bold text-slate-700 focus:ring-2 focus:ring-indigo-500 focus:outline-none cursor-pointer"
+                            >
+                              <option value="CURRENT_MONTH">Mes Actual ({currentYearMonth})</option>
+                              <option value="ALL">Histórico Completo</option>
+                              {filterMonths.map(m => (
+                                <option key={`opt_m_${m}`} value={m}>{m}</option>
+                              ))}
+                            </select>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* KPI widgets rows */}
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                      {/* Standard Operatives */}
+                      <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-2xs text-left">
+                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Gastos Operativos</span>
+                        <p className="text-2xl font-mono font-extrabold text-red-650 mt-1">${totalGastosAmount.toLocaleString()}</p>
+                        <span className="text-[10px] text-slate-500 font-semibold block mt-1">
+                          {filteredGastos.length} comprobantes registrados
+                        </span>
+                      </div>
+
+                      {/* Reposiciones Purchases */}
+                      <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-2xs text-left">
+                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Compras / Boletas de Stock</span>
+                        <p className="text-2xl font-mono font-extrabold text-indigo-650 mt-1">${totalReposAmount.toLocaleString()}</p>
+                        <span className="text-[10px] text-slate-500 font-semibold block mt-1">
+                          {filteredRepos.length} facturas de ingreso {mandoSucursalFilter !== 'ALL' ? `en sucursal ${mandoSucursalFilter === 'Mvd' ? 'Montevideo' : 'Pinamar'}` : ''}
+                        </span>
+                      </div>
+
+                      {/* Combined egresos */}
+                      <div className="bg-white p-4.5 rounded-2xl border border-indigo-100 shadow-sm bg-gradient-to-br from-indigo-50/10 to-indigo-50/30 text-left">
+                        <span className="text-[10px] font-extrabold text-slate-500 uppercase tracking-wider block">TOTAL EGRESOS COMBINADOS</span>
+                        <p className="text-2xl font-mono font-black text-slate-900 mt-1">${overallCombinedExpenses.toLocaleString()}</p>
+                        <span className="text-[10px] text-indigo-600 font-extrabold block mt-1 flex items-center gap-1">
+                          <Check className="w-3.5 h-3.5 text-indigo-500" />
+                          <span>Filtros activos consolidados</span>
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Visual Segmentations Cards */}
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 text-left">
+                      {/* Expenses Category split progress blocks */}
+                      <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-2xs space-y-4">
+                        <h4 className="text-xs font-bold uppercase tracking-wider text-slate-700 border-b border-slate-100 pb-2">
+                          Distribución de Gastos Operativos por Categoría
+                        </h4>
+                        
+                        <div className="space-y-3.5">
+                          {Object.keys(expensesByCategory).length === 0 ? (
+                            <p className="py-8 text-center text-xs text-slate-400 font-mono font-medium">
+                              No hay gastos operativos para mostrar con los filtros seleccionados.
+                            </p>
+                          ) : (
+                            Object.entries(expensesByCategory)
+                              .sort((a, b) => b[1] - a[1])
+                              .map(([category, amount]) => {
+                                const pct = totalGastosAmount > 0 ? Math.round((amount / totalGastosAmount) * 100) : 0;
+                                return (
+                                  <div key={`cat_dist_${category}`} className="space-y-1">
+                                    <div className="flex items-center justify-between text-xs font-sans">
+                                      <span className="font-extrabold text-slate-700">{category}</span>
+                                      <span className="font-mono font-bold text-slate-950">${amount.toLocaleString()} ({pct}%)</span>
+                                    </div>
+                                    <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden">
+                                      <div className="bg-red-500 h-full rounded-full" style={{ width: `${pct}%` }}></div>
+                                    </div>
+                                  </div>
+                                );
+                              })
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Supplier Invoice share breakdown */}
+                      <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-2xs space-y-4">
+                        <h4 className="text-xs font-bold uppercase tracking-wider text-slate-700 border-b border-slate-100 pb-2">
+                          Inversión en Mercadería por Proveedor
+                        </h4>
+                        
+                        <div className="space-y-3.5">
+                          {Object.keys(purchasesByProvider).length === 0 ? (
+                            <p className="py-8 text-center text-xs text-slate-400 font-mono font-medium">
+                              No hay boletas ni remisiones registradas para este filtro.
+                            </p>
+                          ) : (
+                            Object.entries(purchasesByProvider)
+                              .sort((a, b) => b[1] - a[1])
+                              .map(([prov, amount]) => {
+                                const pct = totalReposAmount > 0 ? Math.round((amount / totalReposAmount) * 100) : 0;
+                                return (
+                                  <div key={`prov_dist_${prov}`} className="space-y-1">
+                                    <div className="flex items-center justify-between text-xs font-sans">
+                                      <span className="font-extrabold text-slate-700">{prov}</span>
+                                      <span className="font-mono font-bold text-slate-950">${amount.toLocaleString()} ({pct}%)</span>
+                                    </div>
+                                    <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden">
+                                      <div className="bg-indigo-650 h-full rounded-full" style={{ width: `${pct}%` }}></div>
+                                    </div>
+                                  </div>
+                                );
+                              })
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Unified Combined Timeline of Expenses & restock incoming */}
+                    <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm space-y-4 text-left">
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-slate-150 pb-2.5 gap-2">
+                        <div>
+                          <h4 className="text-xs font-bold uppercase tracking-wider text-slate-705">
+                            Historial Unificado de Egresos y Compras ({combinedTimeline.length})
+                          </h4>
+                          <p className="text-[10px] text-slate-400 font-sans mt-0.5">Línea de tiempo cronológica de egresos operativos e ingresos de mercancías.</p>
+                        </div>
+                        <span className="text-[9px] uppercase font-mono font-black bg-indigo-50 border border-indigo-100 text-indigo-700 px-2 py-0.5 rounded shadow-3xs self-start sm:self-auto">
+                          {mandoGastosMonthFilter === 'CURRENT_MONTH' ? 'Estadísticas del Mes' : 'Estadísticas Completas'}
+                        </span>
+                      </div>
+
+                      <div className="divide-y divide-slate-100 max-h-[700px] overflow-y-auto pr-1 space-y-0.5">
+                        {combinedTimeline.length === 0 ? (
+                          <div className="py-16 text-center text-xs text-slate-400 font-mono">
+                            No se detectó ningún egreso/gasto para reportar con la configuración de filtros actual.
+                          </div>
+                        ) : (
+                          combinedTimeline.map(outlay => {
+                            const isGasto = outlay.tipo === 'Gasto Operativo';
+                            const isExpandedComp = expandedDashboardOutlayId === outlay.id;
+                            const dStrComp = outlay.fecha ? new Date(outlay.fecha).toLocaleDateString() : 'N/A';
+
+                            return (
+                              <div key={outlay.id} className="py-3 first:pt-0 last:pb-0 space-y-2 text-left">
+                                <div className="flex items-center justify-between gap-4 text-xs font-medium">
+                                  <div className="space-y-0.5 text-left">
+                                    <div className="flex items-center gap-1.5 flex-wrap">
+                                      <span className={`inline-block text-[8px] font-black uppercase px-2 py-0.5 rounded font-mono ${
+                                        isGasto ? 'bg-red-50 text-red-700 border border-red-100/50' : 'bg-indigo-50 text-indigo-705 border border-indigo-100/80'
+                                      }`}>
+                                        {outlay.tipo}
+                                      </span>
+                                      <span className="font-extrabold text-slate-805 line-clamp-1">{outlay.concepto}</span>
+                                      {outlay.sucursal !== 'Global' && (
+                                        <span className={`px-1.5 py-0.5 text-[8px] font-black rounded font-mono ${
+                                          outlay.sucursal === 'Mvd' ? 'bg-emerald-50 text-emerald-700' : 'bg-indigo-50 text-indigo-700'
+                                        }`}>
+                                          {outlay.sucursal === 'Mvd' ? 'MONTEVIDEO' : 'PINAMAR'}
+                                        </span>
+                                      )}
+                                    </div>
+                                    <div className="text-[10px] text-slate-400 font-semibold font-mono text-left">
+                                      Categoría: <strong className="text-slate-600">{outlay.categoria}</strong> 
+                                      {outlay.numFactura && <> | Factura: <strong className="text-slate-600">{outlay.numFactura}</strong></>}
+                                      {outlay.proveedor && <> | Proveedor: <strong className="text-slate-600">{outlay.proveedor}</strong></>}
+                                      {outlay.fecha && <> | Fecha: <span className="text-slate-500 font-bold">{dStrComp}</span></>}
+                                    </div>
+                                  </div>
+
+                                  <div className="flex flex-col items-end gap-1 font-mono shrink-0">
+                                    <span className={`font-black tracking-tight ${isGasto ? 'text-red-650' : 'text-indigo-700'}`}>
+                                      ${outlay.monto.toLocaleString("es-UY", { minimumFractionDigits: 1, maximumFractionDigits: 1 })}
+                                    </span>
+                                    {!isGasto && outlay.detalles && outlay.detalles.length > 0 && (
+                                      <button
+                                        type="button"
+                                        onClick={() => setExpandedDashboardOutlayId(isExpandedComp ? null : outlay.id)}
+                                        className="flex items-center gap-0.5 text-[8.5px] text-indigo-650 hover:text-indigo-850 font-black cursor-pointer uppercase tracking-tight"
+                                      >
+                                        <span>{isExpandedComp ? 'Cerrar' : `Ver ${outlay.detalles.length} renglones`}</span>
+                                        {isExpandedComp ? <ChevronUp className="w-2.5 h-2.5" /> : <ChevronDown className="w-2.5 h-2.5" />}
+                                      </button>
+                                    )}
+                                  </div>
+                                </div>
+
+                                {/* Expanded bills item details table inside timeline */}
+                                {!isGasto && isExpandedComp && outlay.detalles && (
+                                  <div className="mt-2 bg-slate-50 p-3 rounded-xl border border-slate-200/60 font-sans space-y-2 animate-in slide-in-from-top-1 duration-150 text-left">
+                                    <div className="flex items-center justify-between pb-1 border-b border-slate-200/50">
+                                      <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest block">ÍCONOS Y DETALLE DE MERCADERÍA ADQUIRIDA</span>
+                                      {outlay.observaciones && (
+                                        <span className="text-[9.5px] italic text-slate-505 truncate max-w-[200px]">💬 "{outlay.observaciones}"</span>
+                                      )}
+                                    </div>
+                                    <div className="overflow-x-auto">
+                                      <table className="w-full text-left text-[11px] font-medium leading-none">
+                                        <thead>
+                                          <tr className="border-b border-slate-200 text-[10px] text-slate-400 font-bold">
+                                            <th className="pb-1.5 pl-1">Código</th>
+                                            <th className="pb-1.5">Articulo</th>
+                                            <th className="pb-1.5 text-right font-semibold">Cant. Recibida</th>
+                                            <th className="pb-1.5 text-right font-semibold">Costo Unitario</th>
+                                            <th className="pb-1.5 text-center font-semibold">Tasa IVA</th>
+                                            <th className="pb-1.5 text-right font-semibold">Neto + IVA</th>
+                                          </tr>
+                                        </thead>
+                                        <tbody className="divide-y divide-slate-100 font-mono">
+                                          {(outlay.detalles || []).map((det: any, dIdx: number) => {
+                                            const itemConIva = det.costo_con_iva !== undefined ? Number(det.costo_con_iva) : (Number(det.costo_unitario) * 1.22);
+                                            return (
+                                              <tr key={`dashboard_outlay_${outlay.id}_${dIdx}`} className="text-slate-800">
+                                                <td className="py-2 pl-1 font-bold text-indigo-700">{det.codigo}</td>
+                                                <td className="py-2 text-[10px] font-sans font-bold max-w-[140px] truncate">{det.nombre || 'Artículo de Compra'}</td>
+                                                <td className="py-2 text-right text-slate-900 font-bold">{det.cantidad} u</td>
+                                                <td className="py-2 text-right text-slate-500">${Number(det.costo_unitario || 0).toFixed(2)}</td>
+                                                <td className="py-2 text-center text-[9px]">
+                                                  <span className="bg-slate-200 text-slate-605 px-1 py-0.5 rounded font-black">
+                                                    {det.tipo_iva !== undefined ? `${det.tipo_iva}%` : '22%'}
+                                                  </span>
+                                                </td>
+                                                <td className="py-2 text-right text-emerald-800 font-bold">
+                                                  ${itemConIva.toFixed(2)}
+                                                </td>
+                                              </tr>
+                                            );
+                                          })}
+                                        </tbody>
+                                      </table>
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
             </div>
           );
         })()}
@@ -6833,7 +7286,7 @@ export default function App() {
                             onClick={() => {
                               const newCfg = { ...senderConfigForm };
                               setSenderConfig(newCfg);
-                              localStorage.setItem('juem_sender_config_v2', JSON.stringify(newCfg));
+                              safeStorage.setItem('juem_sender_config_v2', JSON.stringify(newCfg));
                               setShowSenderConfigEditor(false);
                             }}
                             className="flex-1 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded text-[10px] font-black cursor-pointer shadow-xs transition-all text-center"
@@ -8960,7 +9413,7 @@ export default function App() {
               {(() => {
                 const filteredTraslados = trasladosList.filter(tr => {
                   if (trasladosSearchQuery.trim() !== '') {
-                    const items = Array.isArray(tr.detalles) ? tr.detalles : JSON.parse(tr.detalles || '[]');
+                    const items = Array.isArray(tr.detalles) ? tr.detalles : safeJsonParse(tr.detalles);
                     const q = trasladosSearchQuery.toLowerCase();
                     const matchesItem = items.some((it: any) => 
                       (it.nombre || '').toLowerCase().includes(q) || 
@@ -9079,7 +9532,7 @@ export default function App() {
                             </tr>
                           ) : (
                             filteredTraslados.map((tr: any) => {
-                              const items = Array.isArray(tr.detalles) ? tr.detalles : JSON.parse(tr.detalles || '[]');
+                              const items = Array.isArray(tr.detalles) ? tr.detalles : safeJsonParse(tr.detalles);
                               const totalUnits = items.reduce((sum: number, it: any) => sum + Number(it.cantidad || 0), 0);
                           
                           return (
@@ -9429,7 +9882,7 @@ export default function App() {
 
         {/* 10. VIEW: USER CREDENTIALS MANAGEMENT (ADMINS ONLY) */}
         {activeTab === 'usuarios' && sessionUser?.rol === 'Admin' && (
-          <UsuariosView token={sessionToken || ''} activeUsername={sessionUser.usuario} />
+          <UsuariosView token={sessionToken || ''} activeUsername={sessionUser?.usuario || ''} />
         )}
 
           </>
@@ -10668,6 +11121,55 @@ export default function App() {
                               </div>
                             </div>
                           )}
+
+                          {/* List variants directly inside the inspection card if it has variants! */}
+                          {!isCombo && selectedArticle.variants && (() => {
+                            let parsedLocV = [];
+                            try {
+                              parsedLocV = typeof selectedArticle.variants === 'string' ? JSON.parse(selectedArticle.variants) : selectedArticle.variants;
+                            } catch (e) {}
+                            if (Array.isArray(parsedLocV) && parsedLocV.length > 0) {
+                              return (
+                                <div className="border-t border-slate-200/80 pt-3 mt-2 space-y-2">
+                                  <span className="text-[9.5px] font-extrabold uppercase tracking-wider text-slate-400 block pb-1">
+                                    Variantes del Artículo ({parsedLocV.length})
+                                  </span>
+                                  <div className="space-y-1.5 max-h-[160px] overflow-y-auto scrollbar-thin">
+                                    {parsedLocV.map((v: any, idx: number) => {
+                                      const foundV = catalog.find(x => x.codigo && x.codigo.toLowerCase() === (v.sku || '').toLowerCase());
+                                      const mvdStock = foundV ? foundV.mvd_stock : (v.stock || 0);
+                                      const pinStock = foundV ? foundV.pin_stock : 0;
+                                      return (
+                                        <div key={idx} className="flex items-center justify-between bg-white border border-slate-200/60 p-2 rounded-xl text-[11px] shadow-3xs hover:border-slate-300 transition-all">
+                                          <div className="flex flex-col text-left">
+                                            <span className="font-bold text-slate-850 text-xs">
+                                              Talle: <span className="text-indigo-600 font-extrabold">{v.size || v.attributes?.talle || 'U'}</span>
+                                              {v.color || v.attributes?.color ? ` / Color: ${v.color || v.attributes?.color}` : ''}
+                                            </span>
+                                            <span className="font-mono text-[9.5px] text-slate-400 hover:text-slate-600 select-all mt-0.5">
+                                              SKU: {v.sku}
+                                            </span>
+                                          </div>
+                                          <div className="flex items-center gap-2 font-mono font-bold text-[10px] shrink-0">
+                                            <span className="text-slate-500 bg-slate-100 py-0.5 px-1.5 rounded-lg text-[9.5px]" title="Montevideo">
+                                              Mvd: <strong className="text-slate-900">{mvdStock}</strong>
+                                            </span>
+                                            <span className="text-slate-500 bg-slate-100 py-0.5 px-1.5 rounded-lg text-[9.5px]" title="Pinar">
+                                              Pin: <strong className="text-slate-900">{pinStock}</strong>
+                                            </span>
+                                            <span className="text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-lg text-[9.5px]">
+                                              ${v.price || selectedArticle.precio_venta}
+                                            </span>
+                                          </div>
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                </div>
+                              );
+                            }
+                            return null;
+                          })()}
                         </div>
                       );
                     })()}
@@ -10706,7 +11208,7 @@ export default function App() {
                         </button>
                         <button
                           type="button"
-                          onClick={() => handleDeleteArticle(selectedArticle.id, true)}
+                          onClick={() => handleDeleteArticle(selectedArticle.id, true, selectedArticle.codigo)}
                           className="px-3.5 py-1.5 bg-red-600 hover:bg-red-700 text-white text-[11px] font-extrabold rounded-lg shadow-sm cursor-pointer flex items-center gap-1 transition-all"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
@@ -11544,9 +12046,11 @@ export default function App() {
             {/* FLOW 1: SIMPLE ITEM FORM */}
             {creationType === 'simple' && (
               <form 
-                onSubmit={handleCreateArticleSubmit} 
+                onSubmit={(e) => {
+                  e.preventDefault();
+                }} 
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter' && (e.target as HTMLElement).tagName === 'INPUT') {
+                  if (e.key === 'Enter') {
                     e.preventDefault();
                   }
                 }}
@@ -12191,23 +12695,28 @@ export default function App() {
                         </div>
                       </div>
 
-                      {/* Picker de fotos secundarias del Paso 3 */}
+                      {/* Picker de fotos asociadas o secundarias del Paso 3 */}
                       {(() => {
-                        const secondaryImages = newArticle.imagenes
-                          ? newArticle.imagenes.split(',').map(s => s.trim()).filter(Boolean)
-                          : [];
-                        if (secondaryImages.length === 0) return null;
+                        const allImages: string[] = [];
+                        if (newArticle.imagen_url) {
+                          allImages.push(newArticle.imagen_url);
+                        }
+                        if (newArticle.imagenes) {
+                          const extra = newArticle.imagenes.split(',').map(s => s.trim()).filter(Boolean);
+                          allImages.push(...extra);
+                        }
+                        if (allImages.length === 0) return null;
                         return (
                           <div className="space-y-1.5 p-3.5 bg-white rounded-xl border border-slate-200">
                             <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">Asignar Foto a esta Variante (Paso 3):</span>
                             <div className="flex flex-wrap gap-2">
-                              {secondaryImages.map((imgUrl, imgIdx) => {
+                              {allImages.map((imgUrl, imgIdx) => {
                                 const isSelected = varImageUrl === imgUrl;
                                 return (
                                   <button
                                     type="button"
                                     key={`v_img_select_${imgIdx}`}
-                                    onClick={() => setVarImageUrl(imgUrl)}
+                                    onClick={() => setVarImageUrl(isSelected ? '' : imgUrl)}
                                     className={`relative w-11 h-11 rounded-lg overflow-hidden border-2 transition-all cursor-pointer ${
                                       isSelected ? 'border-indigo-600 ring-2 ring-indigo-100' : 'border-slate-200 opacity-60 hover:opacity-100'
                                     }`}
@@ -12224,7 +12733,7 @@ export default function App() {
                                 );
                               })}
                             </div>
-                            <p className="text-[9px] text-slate-400">Selecciona una de las fotos secundarias subidas en el Paso 3 para esta variante. No se incluye la foto principal.</p>
+                            <p className="text-[9px] text-slate-400">Selecciona una de las fotos subidas en el Paso 3 para esta variante. Se incluye la foto principal y las secundarias.</p>
                           </div>
                         );
                       })()}
@@ -12239,7 +12748,8 @@ export default function App() {
                         const handleSaveNewVariant = () => {
                           const sz = varSize.trim() || 'Único';
                           const col = varColor.trim() || 'Base';
-                          const stockNum = Number(varStock || 0);
+                          const stockMvd = Number(varStockMvd || 0);
+                          const stockPin = Number(varStockPin || 0);
                           const computedSku = varSku.trim() || getRecommendedSku(sz, col);
                           
                           try {
@@ -12255,7 +12765,9 @@ export default function App() {
                                 color: col,
                                 ...(varColorCode ? { colorCode: varColorCode } : {})
                               },
-                              stock: stockNum,
+                              stock_montevideo: stockMvd,
+                              stock_pinamar: stockPin,
+                              stock: stockMvd + stockPin,
                               price: String(Math.round(calculatedWebFaceInstaPrice) || '0'),
                               sku: computedSku,
                               imagen_url: varImageUrl || ''
@@ -12265,7 +12777,8 @@ export default function App() {
                             setVarSize('');
                             setVarColor('');
                             setVarColorCode('');
-                            setVarStock('10');
+                            setVarStockMvd('0');
+                            setVarStockPin('0');
                             setVarImageUrl('');
                           } catch (err) {
                             alert('Error al procesar el JSON de variantes');
@@ -12280,7 +12793,7 @@ export default function App() {
                         };
 
                         return (
-                          <div className="grid grid-cols-2 md:grid-cols-5 gap-2 items-end bg-white p-3 rounded-xl border border-slate-200">
+                          <div className="grid grid-cols-2 md:grid-cols-6 gap-2 items-end bg-white p-3 rounded-xl border border-slate-200">
                             <div className="space-y-1">
                               <span className="text-[9px] font-bold text-slate-450 uppercase block">Talle</span>
                               <input
@@ -12304,12 +12817,23 @@ export default function App() {
                               />
                             </div>
                             <div className="space-y-1">
-                              <span className="text-[9px] font-bold text-slate-450 uppercase block">Stock</span>
+                              <span className="text-[9px] font-bold text-slate-450 uppercase block">Mvd Stock</span>
                               <input
                                 type="number"
                                 min="0"
-                                value={varStock}
-                                onChange={(e) => setVarStock(e.target.value)}
+                                value={varStockMvd}
+                                onChange={(e) => setVarStockMvd(e.target.value)}
+                                onKeyDown={handleKeyDown}
+                                className="w-full bg-slate-50 border border-slate-200 rounded-lg px-2 py-1 text-xs text-slate-800 font-mono text-center font-bold"
+                              />
+                            </div>
+                            <div className="space-y-1">
+                              <span className="text-[9px] font-bold text-slate-450 uppercase block">Pinamar Stock</span>
+                              <input
+                                type="number"
+                                min="0"
+                                value={varStockPin}
+                                onChange={(e) => setVarStockPin(e.target.value)}
                                 onKeyDown={handleKeyDown}
                                 className="w-full bg-slate-50 border border-slate-200 rounded-lg px-2 py-1 text-xs text-slate-800 font-mono text-center font-bold"
                               />
@@ -12324,7 +12848,7 @@ export default function App() {
                                 value={varSku}
                                 onChange={(e) => setVarSku(e.target.value)}
                                 onKeyDown={handleKeyDown}
-                                placeholder={newArticle.codigo ? `${newArticle.codigo}-M` : 'SKU'}
+                                placeholder={newArticle.codigo ? `${newArticle.codigo}` : 'SKU'}
                                 title="Puedes cambiar o personalizar este SKU para la variante"
                                 className="w-full bg-slate-50 border border-slate-200 rounded-lg px-2 py-1 text-xs text-indigo-600 font-mono text-center font-bold"
                               />
@@ -12357,105 +12881,125 @@ export default function App() {
                           return (
                             <div className="bg-white rounded-xl border border-slate-200 overflow-hidden mt-1">
                               <div className="bg-slate-150/40 p-2 text-[9px] font-extrabold uppercase tracking-wide text-slate-500 border-b border-slate-200 grid grid-cols-12 text-center items-center">
-                                <span className="col-span-4 text-left pl-2">Foto / Variante</span>
+                                <span className="col-span-3 text-left pl-2">Foto / Variante</span>
                                 <span className="col-span-3">SKU Correlativo</span>
-                                <span className="col-span-2">Stock</span>
-                                <span className="col-span-2">Precio ($)</span>
+                                <span className="col-span-2">Montevideo</span>
+                                <span className="col-span-2">Pinamar</span>
+                                <span className="col-span-1">Precio ($)</span>
                                 <span className="col-span-1">Borrar</span>
                               </div>
                               <div className="divide-y divide-slate-100 max-h-[190px] overflow-y-auto">
-                                {parsedList.map((variant: any, idx: number) => (
-                                  <div key={`variant_item_${idx}`} className="p-2 text-xs grid grid-cols-12 items-center text-center hover:bg-slate-50/50">
-                                    <div className="col-span-4 text-left pl-2 font-bold text-slate-705 flex items-center gap-2">
-                                      {variant.imagen_url ? (
-                                        <img src={variant.imagen_url} className="w-7 h-7 rounded object-cover border border-slate-200 flex-shrink-0" referrerPolicy="no-referrer" />
-                                      ) : (
-                                        <div className="w-7 h-7 rounded bg-slate-100 border border-slate-200 flex items-center justify-center flex-shrink-0">
-                                          <ImageIcon className="w-3.5 h-3.5 text-slate-400" />
+                                {parsedList.map((variant: any, idx: number) => {
+                                  const mvdCount = variant.stock_montevideo !== undefined ? variant.stock_montevideo : (variant.stock || 0);
+                                  const pinCount = variant.stock_pinamar !== undefined ? variant.stock_pinamar : 0;
+                                  return (
+                                    <div key={`variant_item_${idx}`} className="p-2 text-xs grid grid-cols-12 items-center text-center hover:bg-slate-50/50">
+                                      <div className="col-span-3 text-left pl-2 font-bold text-slate-705 flex items-center gap-2">
+                                        {(() => {
+                                          const displayImg = variant.imagen_url || newArticle.imagen_url;
+                                          return displayImg ? (
+                                            <img src={displayImg} className="w-8 h-8 rounded-lg object-cover border border-slate-200 shadow-sm flex-shrink-0 cursor-zoom-in hover:scale-105 transition-transform" referrerPolicy="no-referrer" />
+                                          ) : (
+                                            <div className="w-8 h-8 rounded-lg bg-slate-100 border border-slate-200 flex items-center justify-center flex-shrink-0">
+                                              <ImageIcon className="w-3.5 h-3.5 text-slate-400" />
+                                            </div>
+                                          );
+                                        })()}
+                                        <div className="flex flex-col min-w-0">
+                                          <span className="truncate font-bold text-slate-800 text-[11px]">{variant.attributes?.talle || 'U'} / {variant.attributes?.color || 'Base'}</span>
                                         </div>
-                                      )}
-                                      <div className="flex flex-col min-w-0">
-                                        <span className="truncate font-bold text-slate-800 text-[11px]">{variant.attributes?.talle || 'U'} / {variant.attributes?.color || 'Base'}</span>
+                                      </div>
+                                      <div className="col-span-3 font-mono font-bold text-indigo-650 bg-indigo-50 px-2 py-0.5 rounded text-[11px] w-[85%] mx-auto">
+                                        <input
+                                          type="text"
+                                          value={variant.sku}
+                                          onChange={(e) => {
+                                            const val = e.target.value;
+                                            try {
+                                              const current = JSON.parse(newArticle.variants || '[]');
+                                              current[idx].sku = val;
+                                              setNewArticle(prev => ({ ...prev, variants: JSON.stringify(current, null, 2) }));
+                                            } catch (err) {}
+                                          }}
+                                          className="w-full bg-transparent text-center focus:outline-none text-indigo-750 font-semibold font-mono"
+                                        />
+                                      </div>
+                                      <div className="col-span-2">
+                                        <input
+                                          type="number"
+                                          value={mvdCount}
+                                          onChange={(e) => {
+                                            const val = Number(e.target.value || 0);
+                                            try {
+                                              const current = JSON.parse(newArticle.variants || '[]');
+                                              current[idx].stock_montevideo = val;
+                                              current[idx].stock = val + (current[idx].stock_pinamar || 0);
+                                              setNewArticle(prev => ({ ...prev, variants: JSON.stringify(current, null, 2) }));
+                                            } catch (err) {}
+                                          }}
+                                          className="w-[75%] mx-auto bg-slate-50 text-slate-750 font-mono border border-slate-200 rounded px-1 py-0.5 text-center font-bold"
+                                        />
+                                      </div>
+                                      <div className="col-span-2">
+                                        <input
+                                          type="number"
+                                          value={pinCount}
+                                          onChange={(e) => {
+                                            const val = Number(e.target.value || 0);
+                                            try {
+                                              const current = JSON.parse(newArticle.variants || '[]');
+                                              current[idx].stock_pinamar = val;
+                                              current[idx].stock = (current[idx].stock_montevideo || 0) + val;
+                                              setNewArticle(prev => ({ ...prev, variants: JSON.stringify(current, null, 2) }));
+                                            } catch (err) {}
+                                          }}
+                                          className="w-[75%] mx-auto bg-slate-50 text-slate-750 font-mono border border-slate-200 rounded px-1 py-0.5 text-center font-bold"
+                                        />
+                                      </div>
+                                      <div className="col-span-1">
+                                        <input
+                                          type="number"
+                                          value={variant.price || 0}
+                                          onChange={(e) => {
+                                            const val = String(e.target.value || 0);
+                                            try {
+                                              const current = JSON.parse(newArticle.variants || '[]');
+                                              current[idx].price = val;
+                                              setNewArticle(prev => ({ ...prev, variants: JSON.stringify(current, null, 2) }));
+                                            } catch (err) {}
+                                          }}
+                                          className="w-full bg-emerald-50/65 font-mono border border-emerald-150 rounded px-1 py-0.5 text-center text-emerald-850 font-extrabold text-[10px]"
+                                        />
+                                      </div>
+                                      <div className="col-span-1">
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            try {
+                                              const current = JSON.parse(newArticle.variants || '[]');
+                                              const filtered = current.filter((_: any, sIdx: number) => sIdx !== idx);
+                                              setNewArticle(prev => ({ ...prev, variants: JSON.stringify(filtered, null, 2) }));
+                                            } catch (err) {}
+                                          }}
+                                          className="text-red-500 hover:text-red-700 cursor-pointer font-bold text-xs"
+                                        >
+                                          🗑️
+                                        </button>
                                       </div>
                                     </div>
-                                    <div className="col-span-3 font-mono font-bold text-indigo-650 bg-indigo-50 px-2 py-0.5 rounded text-[11px] w-[85%] mx-auto">
-                                      {variant.sku}
-                                    </div>
-                                    <div className="col-span-2">
-                                      <input
-                                        type="number"
-                                        value={variant.stock || 0}
-                                        onChange={(e) => {
-                                          const val = Number(e.target.value || 0);
-                                          try {
-                                            const current = JSON.parse(newArticle.variants || '[]');
-                                            current[idx].stock = val;
-                                            setNewArticle(prev => ({ ...prev, variants: JSON.stringify(current, null, 2) }));
-                                          } catch (err) {}
-                                        }}
-                                        className="w-[70%] mx-auto bg-slate-50 text-slate-750 font-mono border border-slate-200 rounded px-1 py-0.5 text-center font-bold"
-                                      />
-                                    </div>
-                                    <div className="col-span-2">
-                                      <input
-                                        type="number"
-                                        value={variant.price || 0}
-                                        onChange={(e) => {
-                                          const val = String(e.target.value || 0);
-                                          try {
-                                            const current = JSON.parse(newArticle.variants || '[]');
-                                            current[idx].price = val;
-                                            setNewArticle(prev => ({ ...prev, variants: JSON.stringify(current, null, 2) }));
-                                          } catch (err) {}
-                                        }}
-                                        className="w-[80%] mx-auto bg-emerald-50/65 font-mono border border-emerald-150 rounded px-1 py-0.5 text-center text-emerald-850 font-extrabold"
-                                      />
-                                    </div>
-                                    <div className="col-span-1">
-                                      <button
-                                        type="button"
-                                        onClick={() => {
-                                          try {
-                                            const current = JSON.parse(newArticle.variants || '[]');
-                                            const filtered = current.filter((_: any, sIdx: number) => sIdx !== idx);
-                                            setNewArticle(prev => ({ ...prev, variants: JSON.stringify(filtered, null, 2) }));
-                                          } catch (err) {}
-                                        }}
-                                        className="text-red-500 hover:text-red-700 cursor-pointer font-bold text-xs"
-                                      >
-                                        🗑️
-                                      </button>
-                                    </div>
-                                  </div>
-                                ))}
+                                  );
+                                })}
                               </div>
                             </div>
                           );
                         } catch (e) {
                           return (
                             <div className="p-3.5 bg-red-50 border border-red-200 rounded-xl text-red-650 text-xs font-mono">
-                              ⚠️ JSON de variante inválido. Corrige el código en el editor avanzado de abajo.
+                              ⚠️ Estructura o formato de variante de artículo no válido.
                             </div>
                           );
                         }
                       })()}
-
-                      {/* Advanced JSON Editor Collapse Area */}
-                      <details className="text-slate-500 group border border-slate-200 bg-white p-2.5 rounded-xl cursor-default">
-                        <summary className="text-[10px] font-bold uppercase tracking-wider cursor-pointer list-none flex items-center justify-between select-none">
-                          <span>🛠️ Editor Avanzado JSON de la IA / ERP</span>
-                          <span className="text-xs group-open:rotate-180 transition-transform">▼</span>
-                        </summary>
-                        <div className="space-y-1.5 pt-2">
-                          <textarea
-                            rows={3}
-                            value={newArticle.variants}
-                            onChange={(e) => setNewArticle(prev => ({ ...prev, variants: e.target.value }))}
-                            placeholder="[]"
-                            className="w-full bg-slate-900 text-emerald-400 border border-slate-950 rounded-xl p-2 text-[10px] font-mono focus:ring-2 focus:ring-indigo-500 focus:outline-none"
-                          />
-                        </div>
-                      </details>
                     </div>
 
                     {/* Enablement Option Badged Switches */}
@@ -12530,26 +13074,43 @@ export default function App() {
 
                   <div className="flex gap-2.5">
                     {newArticleStep < 4 ? (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const now = Date.now();
-                          if (now - lastStepChange < 650) return;
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (!newArticle.nombre.trim()) {
+                              alert('Por favor, ingresa el nombre del artículo.');
+                              return;
+                            }
+                            handleCreateArticleSubmit(undefined, true);
+                          }}
+                          className="border border-indigo-200 text-indigo-600 hover:bg-indigo-50 font-bold text-xs py-2.5 px-4 rounded-xl cursor-pointer transition-all uppercase tracking-wide"
+                          title="Crea el artículo directamente con los datos actuales omitiendo el asistente"
+                        >
+                          Crear de una
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const now = Date.now();
+                            if (now - lastStepChange < 650) return;
 
-                          if (newArticleStep === 1 && !newArticle.nombre.trim()) {
-                            alert('Por favor, ingresa el nombre del artículo.');
-                            return;
-                          }
-                          setNewArticleStep(prev => prev + 1);
-                          setLastStepChange(now);
-                        }}
-                        className="bg-indigo-600 hover:bg-indigo-755 text-white font-extrabold text-xs py-2.5 px-6 rounded-xl shadow-md cursor-pointer transition-all uppercase tracking-wide"
-                      >
-                        Siguiente
-                      </button>
+                            if (newArticleStep === 1 && !newArticle.nombre.trim()) {
+                              alert('Por favor, ingresa el nombre del artículo.');
+                              return;
+                            }
+                            setNewArticleStep(prev => prev + 1);
+                            setLastStepChange(now);
+                          }}
+                          className="bg-indigo-600 hover:bg-indigo-755 text-white font-extrabold text-xs py-2.5 px-6 rounded-xl shadow-md cursor-pointer transition-all uppercase tracking-wide"
+                        >
+                          Siguiente
+                        </button>
+                      </div>
                     ) : (
                       <button
-                        type="submit"
+                        type="button"
+                        onClick={() => handleCreateArticleSubmit()}
                         className="bg-gradient-to-r from-indigo-600 to-indigo-700 hover:from-indigo-700 hover:to-indigo-800 text-white font-extrabold text-xs py-2.5 px-6 rounded-xl shadow-md cursor-pointer transition-all flex items-center justify-center gap-2 uppercase tracking-wide"
                       >
                         <Plus className="w-4 h-4" />

@@ -1,5 +1,7 @@
+import { safeStorage } from './storage';
+
 export async function apiFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
-  const token = localStorage.getItem('juem_session_token');
+  const token = safeStorage.getItem('juem_session_token');
   const updatedInit = { ...(init || {}) };
   const headers = { ...(updatedInit.headers || {}) } as Record<string, string>;
   

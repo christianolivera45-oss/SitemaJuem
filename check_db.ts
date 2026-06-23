@@ -22,7 +22,27 @@ async function run() {
   }
   const sql = postgres(dbUrl, { ssl: { rejectUnauthorized: false }, connect_timeout: 10 });
   try {
-    const stock = await sql`SELECT id_code, name FROM stock`;
+    const stock = await sql`SELECT id_code, name, variants FROM stock`;
+    console.log(`FOUND ${stock.length} ARTICLES IN STOCK TABLE.`);
+    
+    const variantSkusSet = new Set<string>();
+    for (const s of stock) {
+      if (s.variants) {
+        try {
+          const parsed = typeof s.variants === 'string' ? JSON.parse(s.variants) : s.variants;
+          if (Array.isArray(parsed)) {
+            console.log(`Article ${s.id_code} has variants:`, parsed.map((v: any) => v.sku));
+            parsed.forEach((v: any) => {
+              if (v.sku) {
+                variantSkusSet.add(v.sku.toLowerCase().trim());
+              }
+            });
+          }
+        } catch (e) {}
+      }
+    }
+    console.log("variantSkusSet size:", variantSkusSet.size, "elements:", Array.from(variantSkusSet));
+
     const ids: Record<number, any[]> = {};
     for (const s of stock) {
       const numericId = codeToId(s.id_code);

@@ -45,6 +45,43 @@ async function syncStockToEcommerce(id_code: string) {
     if (!id_code) return;
     const cleanCode = id_code.trim();
 
+    // Check if this id_code is actually a child variation SKU of a parent product.
+    // If it is, we re-route the sync to the parent product SKU so WooCommerce/E-commerce is updated under the variable product context.
+    let parentRow: any = null;
+    if (sql) {
+      try {
+        const allWithVariants = await sql`SELECT id_code, name, variants FROM stock WHERE variants IS NOT NULL AND variants != '[]' AND variants != ''`;
+        for (const row of allWithVariants) {
+          const parsed = typeof row.variants === 'string' ? JSON.parse(row.variants) : row.variants;
+          if (Array.isArray(parsed) && parsed.some((v: any) => v.sku && v.sku.toLowerCase() === cleanCode.toLowerCase())) {
+            parentRow = row;
+            break;
+          }
+        }
+      } catch (err) {
+        console.error("Error checking parent row for variant routing in postgres:", err);
+      }
+    } else {
+      for (const row of mock_articulos as any[]) {
+        if (row.variants) {
+          try {
+            const parsed = typeof row.variants === 'string' ? JSON.parse(row.variants) : row.variants;
+            if (Array.isArray(parsed) && parsed.some((v: any) => v.sku && v.sku.toLowerCase() === cleanCode.toLowerCase())) {
+              parentRow = row;
+              break;
+            }
+          } catch (e) {}
+        }
+      }
+    }
+
+    if (parentRow) {
+      const parentSku = parentRow.id_code || parentRow.codigo || '';
+      const parentName = parentRow.name || parentRow.nombre || '';
+      console.log(`[SYNC RUN RE-ROUTE] Re-routing sync for variant SKU "${cleanCode}" to parent product "${parentSku}" ("${parentName}")`);
+      return syncStockToEcommerce(parentSku);
+    }
+
     // 1. Fetch current stock levels AND complete product details from SQL or mock memory
     let mvd = 0;
     let pin = 0;
@@ -173,7 +210,7 @@ async function syncStockToEcommerce(id_code: string) {
       try {
         const rawVariants = typeof variants === 'string' ? JSON.parse(variants) : variants;
         if (Array.isArray(rawVariants)) {
-          bodyData.variants = rawVariants.map((v: any) => {
+          bodyData.variants = await Promise.all(rawVariants.map(async (v: any) => {
             const size = v.size || v.attributes?.talle || v.attributes?.size || v.talle || "Único";
             const color = v.color || v.attributes?.color || "Base";
             const colorLower = color.trim().toLowerCase();
@@ -190,14 +227,35 @@ async function syncStockToEcommerce(id_code: string) {
               else colorCode = "#cbd5e1"; // fallback color
             }
 
+            // Retrieve live current stock of this variant from database if it has its own SKU row
+            let varStock = Number(v.stock !== undefined ? v.stock : totalStock);
+            if (v.sku) {
+              if (sql) {
+                try {
+                  const varRows = await sql`SELECT stock_montevideo, stock_pinamar FROM stock WHERE LOWER(id_code) = LOWER(${v.sku})`;
+                  if (varRows.length > 0) {
+                    varStock = Number(varRows[0].stock_montevideo || 0) + Number(varRows[0].stock_pinamar || 0);
+                  }
+                } catch (e) {
+                  console.error(`Error loading stock for variant SKU ${v.sku} in syncStockToEcommerce:`, e);
+                }
+              } else {
+                const numericId = codeToId(v.sku);
+                const foundMvd = mock_stock.find(s => s.articulo_id === numericId && s.sucursal === 'Mvd');
+                const foundPin = mock_stock.find(s => s.articulo_id === numericId && s.sucursal === 'Pin');
+                varStock = (foundMvd ? Number(foundMvd.cantidad || 0) : 0) + (foundPin ? Number(foundPin.cantidad || 0) : 0);
+              }
+            }
+
             return {
               size,
               color,
               colorCode,
-              stock: Number(v.stock !== undefined ? v.stock : totalStock),
-              imageUrl: v.imageUrl || v.image || imageUrl || ""
+              stock: varStock,
+              imageUrl: v.imageUrl || v.image || v.imagen_url || imageUrl || "",
+              sku: v.sku || ""
             };
-          });
+          }));
         } else {
           bodyData.variants = [];
         }
@@ -334,7 +392,7 @@ let mock_arqueos_caja: any[] = [
 ];
 
 // In-Memory Database fallback so that the app NEVER crashes even if Supabase is offline
-let mock_articulos = [
+let mock_articulos: any[] = [
   { id: 1, codigo: "J001", nombre: "Funda Neopreno 11 Plan Ceibal Lisas Rosada", tipo: "simple", precio_venta: 480.0, costo: 198.0, comision_ml: 0.11, precio_venta_ml: 772.0, imagen_url: "" },
   { id: 2, codigo: "J002", nombre: "Funda Neopreno 11 Plan Ceibal Lisas Rosada", tipo: "simple", precio_venta: 480.0, costo: 198.0, comision_ml: 0.11, precio_venta_ml: 772.0, imagen_url: "" },
   { id: 3, codigo: "J003", nombre: "Funda Neopreno 11 Plan Ceibal Lisas Rosada", tipo: "simple", precio_venta: 480.0, costo: 198.0, comision_ml: 0.11, precio_venta_ml: 772.0, imagen_url: "" },
@@ -966,14 +1024,19 @@ async function initDb() {
   }
 }
 
-// Initialize Gemini API client
-const geminiApiKey = process.env.GEMINI_API_KEY;
-const aiClient = new GoogleGenAI({
-  apiKey: geminiApiKey,
-  httpOptions: {
-    headers: { 'User-Agent': 'aistudio-build' }
+// Lazy helper for Gemini API client to prevent crashing at module load if credentials are absent
+let _aiClientInstance: GoogleGenAI | null = null;
+function getAiClient(): GoogleGenAI {
+  if (!_aiClientInstance) {
+    _aiClientInstance = new GoogleGenAI({
+      apiKey: process.env.GEMINI_API_KEY || 'AIzaSy_dummy_key_if_none_supplied',
+      httpOptions: {
+        headers: { 'User-Agent': 'aistudio-build' }
+      }
+    });
   }
-});
+  return _aiClientInstance;
+}
 
 async function startServer() {
   const app = express();
@@ -1619,26 +1682,7 @@ async function startServer() {
         const serializedImagenes = Array.isArray(imagenes) ? JSON.stringify(imagenes) : (imagenes || '');
         const serializedVariants = typeof variants === 'string' ? variants : JSON.stringify(variants || []);
 
-        // Save to postgres 'stock' table directly
-        await sql`
-          INSERT INTO stock (
-            id_code, name, compra_price, comision_ml, venta_price, precio_venta_ml, 
-            stock_pinamar, stock_montevideo, is_favorite, image_url, comision_ml_raw,
-            original_price, description, category, subcategory, featured, paused, is_3d, consult_only,
-            categoria_id, subcategoria_id, imagenes, variants
-          )
-          VALUES (
-            ${codigo}, ${nombre}, ${cCosto}, ${commissionFlatAmount}, ${pVenta}, ${Number(precio_venta_ml || pVenta)}, 
-            ${Number(inicial_pin || 0)}, ${Number(inicial_mvd || 0)}, false, ${imgUrl}, ${comision_ml_raw !== undefined && comision_ml_raw !== null ? String(comision_ml_raw) : null},
-            ${original_price !== undefined && original_price !== null && original_price !== '' ? Number(original_price) : null},
-            ${description || ''}, ${category || ''}, ${subcategory || ''}, 
-            ${!!featured}, ${!!paused}, ${!!is_3d}, ${!!consult_only},
-            ${categoria_id || null}, ${subcategoria_id || null}, ${serializedImagenes}, ${serializedVariants}
-          )
-          ON CONFLICT (id_code) DO NOTHING
-        `;
-
-        // Insert variants as separate independent articles
+        // Parse variants to determine if we should skip creating the parent item
         let parsedVariants: any[] = [];
         try {
           parsedVariants = typeof variants === 'string' ? JSON.parse(variants) : (variants || []);
@@ -1646,19 +1690,73 @@ async function startServer() {
           console.error("Error parsing variants JSON in server:", e);
         }
 
-        if (Array.isArray(parsedVariants) && parsedVariants.length > 0) {
+        const hasVariants = Array.isArray(parsedVariants) && parsedVariants.length > 0;
+
+        if (!hasVariants) {
+          // Save to postgres 'stock' table directly only if there are no variants
+          await sql`
+            INSERT INTO stock (
+              id_code, name, compra_price, comision_ml, venta_price, precio_venta_ml, 
+              stock_pinamar, stock_montevideo, is_favorite, image_url, comision_ml_raw,
+              original_price, description, category, subcategory, featured, paused, is_3d, consult_only,
+              categoria_id, subcategoria_id, imagenes, variants
+            )
+            VALUES (
+              ${codigo}, ${nombre}, ${cCosto}, ${commissionFlatAmount}, ${pVenta}, ${Number(precio_venta_ml || pVenta)}, 
+              ${Number(inicial_pin || 0)}, ${Number(inicial_mvd || 0)}, false, ${imgUrl}, ${comision_ml_raw !== undefined && comision_ml_raw !== null ? String(comision_ml_raw) : null},
+              ${original_price !== undefined && original_price !== null && original_price !== '' ? Number(original_price) : null},
+              ${description || ''}, ${category || ''}, ${subcategory || ''}, 
+              ${!!featured}, ${!!paused}, ${!!is_3d}, ${!!consult_only},
+              ${categoria_id || null}, ${subcategoria_id || null}, ${serializedImagenes}, ${serializedVariants}
+            )
+            ON CONFLICT (id_code) DO UPDATE
+            SET name = EXCLUDED.name,
+                compra_price = EXCLUDED.compra_price,
+                comision_ml = EXCLUDED.comision_ml,
+                venta_price = EXCLUDED.venta_price,
+                precio_venta_ml = EXCLUDED.precio_venta_ml,
+                image_url = EXCLUDED.image_url,
+                comision_ml_raw = EXCLUDED.comision_ml_raw,
+                original_price = EXCLUDED.original_price,
+                description = EXCLUDED.description,
+                category = EXCLUDED.category,
+                subcategory = EXCLUDED.subcategory,
+                featured = EXCLUDED.featured,
+                paused = EXCLUDED.paused,
+                is_3d = EXCLUDED.is_3d,
+                consult_only = EXCLUDED.consult_only,
+                categoria_id = EXCLUDED.categoria_id,
+                subcategoria_id = EXCLUDED.subcategoria_id,
+                imagenes = EXCLUDED.imagenes,
+                variants = EXCLUDED.variants
+          `;
+        }
+
+        if (hasVariants) {
           for (const variant of parsedVariants) {
             const variantSku = variant.sku || '';
             if (!variantSku) continue;
 
-            const talle = variant.attributes?.talle || '';
-            const color = variant.attributes?.color || '';
-            const variantName = nombre + (talle || color ? ` - ${talle}${talle && color ? ' / ' : ''}${color}` : '');
+            // Extract attributes robustly
+            const attr = variant.attributes || variant.Attributes || {};
+            const talle = String(variant.talle || attr.talle || attr.Talle || attr.size || attr.Size || '').trim();
+            const color = String(variant.color || attr.color || attr.Color || '').trim();
+
+            let variantName = nombre.trim();
+            if (talle || color) {
+              const parts = [];
+              if (talle) parts.push(talle);
+              if (color) parts.push(color);
+              variantName += ` - ${parts.join(' / ')}`;
+            }
             
-            const variantVentaML = Number(variant.price || pVenta);
-            const variantVentaGeneral = variantVentaML - commissionFlatAmount;
-            const variantImgUrl = variant.imagen_url || imgUrl;
-            const variantStock = Number(variant.stock || 0);
+            const variantVentaGeneral = Number(variant.price || pVenta);
+            const variantVentaML = variantVentaGeneral + commissionFlatAmount;
+            const variantImgUrl = String(variant.imagen_url || variant.image_url || variant.imageUrl || variant.image || variant.imagen || imgUrl || '').trim();
+            
+            // Extract branch specific stocks
+            const stockMvd = Number(variant.stock_montevideo !== undefined ? variant.stock_montevideo : (variant.stock || 0));
+            const stockPin = Number(variant.stock_pinamar !== undefined ? variant.stock_pinamar : 0);
 
             await sql`
               INSERT INTO stock (
@@ -1669,42 +1767,104 @@ async function startServer() {
               )
               VALUES (
                 ${variantSku}, ${variantName}, ${cCosto}, ${commissionFlatAmount}, ${variantVentaGeneral}, ${variantVentaML}, 
-                0, ${variantStock}, false, ${variantImgUrl}, ${comision_ml_raw !== undefined && comision_ml_raw !== null ? String(comision_ml_raw) : null},
+                ${stockPin}, ${stockMvd}, false, ${variantImgUrl}, ${comision_ml_raw !== undefined && comision_ml_raw !== null ? String(comision_ml_raw) : null},
                 ${original_price !== undefined && original_price !== null && original_price !== '' ? Number(original_price) : null},
                 ${description || ''}, ${category || ''}, ${subcategory || ''}, 
                 ${!!featured}, ${!!paused}, ${!!is_3d}, ${!!consult_only},
                 ${categoria_id || null}, ${subcategoria_id || null}, '[]', '[]'
               )
-              ON CONFLICT (id_code) DO NOTHING
+              ON CONFLICT (id_code) DO UPDATE
+              SET name = EXCLUDED.name,
+                  compra_price = EXCLUDED.compra_price,
+                  comision_ml = EXCLUDED.comision_ml,
+                  venta_price = EXCLUDED.venta_price,
+                  precio_venta_ml = EXCLUDED.precio_venta_ml,
+                  image_url = EXCLUDED.image_url,
+                  comision_ml_raw = EXCLUDED.comision_ml_raw,
+                  original_price = EXCLUDED.original_price,
+                  description = EXCLUDED.description,
+                  category = EXCLUDED.category,
+                  subcategory = EXCLUDED.subcategory,
+                  featured = EXCLUDED.featured,
+                  paused = EXCLUDED.paused,
+                  is_3d = EXCLUDED.is_3d,
+                  consult_only = EXCLUDED.consult_only,
+                  categoria_id = EXCLUDED.categoria_id,
+                  subcategoria_id = EXCLUDED.subcategoria_id
             `;
           }
         }
 
-        savedItem = {
-          id: codeToId(codigo),
-          codigo,
-          nombre,
-          tipo,
-          precio_venta: pVenta,
-          costo: cCosto,
-          comision_ml: commissionFlatAmount,
-          precio_venta_ml: Number(precio_venta_ml || pVenta),
-          imagen_url: imgUrl,
-          mvd_stock: Number(inicial_mvd || 0),
-          pin_stock: Number(inicial_pin || 0),
-          original_price: original_price !== undefined && original_price !== null && original_price !== '' ? Number(original_price) : null,
-          description: description || '',
-          category: category || '',
-          subcategory: subcategory || '',
-          featured: !!featured,
-          paused: !!paused,
-          is_3d: !!is_3d,
-          consult_only: !!consult_only,
-          categoria_id: categoria_id || null,
-          subcategoria_id: subcategoria_id || null,
-          imagenes: serializedImagenes,
-          variants: serializedVariants
-        };
+        if (hasVariants) {
+          const firstVar = parsedVariants[0];
+          const attr = firstVar.attributes || firstVar.Attributes || {};
+          const talle = String(firstVar.talle || attr.talle || attr.Talle || attr.size || attr.Size || '').trim();
+          const color = String(firstVar.color || attr.color || attr.Color || '').trim();
+          let variantName = nombre.trim();
+          if (talle || color) {
+            const parts = [];
+            if (talle) parts.push(talle);
+            if (color) parts.push(color);
+            variantName += ` - ${parts.join(' / ')}`;
+          }
+          const variantVentaGeneral = Number(firstVar.price || pVenta);
+          const variantVentaML = variantVentaGeneral + commissionFlatAmount;
+          const variantImgUrl = String(firstVar.imagen_url || firstVar.image_url || firstVar.imageUrl || imgUrl || '').trim();
+          const stockMvd = Number(firstVar.stock_montevideo !== undefined ? firstVar.stock_montevideo : (firstVar.stock || 0));
+          const stockPin = Number(firstVar.stock_pinamar !== undefined ? firstVar.stock_pinamar : 0);
+
+          savedItem = {
+            id: codeToId(firstVar.sku),
+            codigo: firstVar.sku,
+            nombre: variantName,
+            tipo: 'simple',
+            precio_venta: variantVentaGeneral,
+            costo: cCosto,
+            comision_ml: commissionFlatAmount,
+            precio_venta_ml: variantVentaML,
+            imagen_url: variantImgUrl,
+            mvd_stock: stockMvd,
+            pin_stock: stockPin,
+            original_price: original_price !== undefined && original_price !== null && original_price !== '' ? Number(original_price) : null,
+            description: description || '',
+            category: category || '',
+            subcategory: subcategory || '',
+            featured: !!featured,
+            paused: !!paused,
+            is_3d: !!is_3d,
+            consult_only: !!consult_only,
+            categoria_id: categoria_id || null,
+            subcategoria_id: subcategoria_id || null,
+            imagenes: '[]',
+            variants: '[]'
+          };
+        } else {
+          savedItem = {
+            id: codeToId(codigo),
+            codigo,
+            nombre,
+            tipo,
+            precio_venta: pVenta,
+            costo: cCosto,
+            comision_ml: commissionFlatAmount,
+            precio_venta_ml: Number(precio_venta_ml || pVenta),
+            imagen_url: imgUrl,
+            mvd_stock: Number(inicial_mvd || 0),
+            pin_stock: Number(inicial_pin || 0),
+            original_price: original_price !== undefined && original_price !== null && original_price !== '' ? Number(original_price) : null,
+            description: description || '',
+            category: category || '',
+            subcategory: subcategory || '',
+            featured: !!featured,
+            paused: !!paused,
+            is_3d: !!is_3d,
+            consult_only: !!consult_only,
+            categoria_id: categoria_id || null,
+            subcategoria_id: subcategoria_id || null,
+            imagenes: serializedImagenes,
+            variants: serializedVariants
+          };
+        }
 
         // If it is a compound bundle/combo, save its formula components into combos
         if (tipo === 'compuesto' && Array.isArray(componentes)) {
@@ -1740,56 +1900,133 @@ async function startServer() {
         const serializedImagenes = Array.isArray(imagenes) ? JSON.stringify(imagenes) : (imagenes || '');
         const serializedVariants = typeof variants === 'string' ? variants : JSON.stringify(variants || []);
 
-        savedItem = { 
-          id: nextId, 
-          codigo, 
-          nombre, 
-          tipo, 
-          precio_venta: pVenta, 
-          costo: cCosto, 
-          comision_ml: commissionFlatAmount, 
-          comision_ml_raw: comision_ml_raw || "", 
-          precio_venta_ml: pVenta, 
-          imagen_url: imgUrl,
-          original_price: original_price !== undefined && original_price !== null && original_price !== '' ? Number(original_price) : null,
-          description: description || '',
-          category: category || '',
-          subcategory: subcategory || '',
-          featured: !!featured,
-          paused: !!paused,
-          is_3d: !!is_3d,
-          consult_only: !!consult_only,
-          categoria_id: categoria_id || null,
-          subcategoria_id: subcategoria_id || null,
-          imagenes: serializedImagenes,
-          variants: serializedVariants
-        };
-        mock_articulos.push(savedItem);
+        let parsedVariants: any[] = [];
+        try {
+          parsedVariants = typeof variants === 'string' ? JSON.parse(variants) : (variants || []);
+        } catch (e) {}
 
-        if (tipo === 'simple') {
-          mock_stock.push({ id: mock_stock.length + 1, articulo_id: nextId, sucursal: "Mvd", cantidad: Number(inicial_mvd || 0) });
-          mock_stock.push({ id: mock_stock.length + 1, articulo_id: nextId, sucursal: "Pin", cantidad: Number(inicial_pin || 0) });
+        const hasVariants = Array.isArray(parsedVariants) && parsedVariants.length > 0;
 
-          // Also add mock articles for variants
-          let parsedVariants: any[] = [];
-          try {
-            parsedVariants = typeof variants === 'string' ? JSON.parse(variants) : (variants || []);
-          } catch (e) {}
+        if (!hasVariants) {
+          let existingMatchIndex = mock_articulos.findIndex(a => a.codigo && a.codigo.toLowerCase() === codigo.toLowerCase());
+          if (existingMatchIndex >= 0) {
+            const matchedItem = mock_articulos[existingMatchIndex];
+            matchedItem.nombre = nombre;
+            matchedItem.precio_venta = pVenta;
+            matchedItem.costo = cCosto;
+            matchedItem.comision_ml = commissionFlatAmount;
+            matchedItem.comision_ml_raw = comision_ml_raw || "";
+            matchedItem.precio_venta_ml = pVenta;
+            matchedItem.imagen_url = imgUrl;
+            matchedItem.original_price = original_price !== undefined && original_price !== null && original_price !== '' ? Number(original_price) : null;
+            matchedItem.description = description || '';
+            matchedItem.category = category || '';
+            matchedItem.subcategory = subcategory || '';
+            matchedItem.featured = !!featured;
+            matchedItem.paused = !!paused;
+            matchedItem.is_3d = !!is_3d;
+            matchedItem.consult_only = !!consult_only;
+            matchedItem.categoria_id = categoria_id || null;
+            matchedItem.subcategoria_id = subcategoria_id || null;
+            matchedItem.imagenes = serializedImagenes;
+            matchedItem.variants = serializedVariants;
+            savedItem = matchedItem;
 
-          if (Array.isArray(parsedVariants) && parsedVariants.length > 0) {
-            for (const variant of parsedVariants) {
-              const variantSku = variant.sku || '';
-              if (!variantSku) continue;
+            // Update stock rows for main item if found
+            let mvdItem = mock_stock.find(s => s.articulo_id === matchedItem.id && s.sucursal === "Mvd");
+            if (mvdItem) mvdItem.cantidad = Number(inicial_mvd || 0);
+            let pinItem = mock_stock.find(s => s.articulo_id === matchedItem.id && s.sucursal === "Pin");
+            if (pinItem) pinItem.cantidad = Number(inicial_pin || 0);
+          } else {
+            savedItem = { 
+              id: nextId, 
+              codigo, 
+              nombre, 
+              tipo, 
+              precio_venta: pVenta, 
+              costo: cCosto, 
+              comision_ml: commissionFlatAmount, 
+              comision_ml_raw: comision_ml_raw || "", 
+              precio_venta_ml: pVenta, 
+              imagen_url: imgUrl,
+              original_price: original_price !== undefined && original_price !== null && original_price !== '' ? Number(original_price) : null,
+              description: description || '',
+              category: category || '',
+              subcategory: subcategory || '',
+              featured: !!featured,
+              paused: !!paused,
+              is_3d: !!is_3d,
+              consult_only: !!consult_only,
+              categoria_id: categoria_id || null,
+              subcategoria_id: subcategoria_id || null,
+              imagenes: serializedImagenes,
+              variants: serializedVariants
+            };
+            mock_articulos.push(savedItem);
 
-              const talle = variant.attributes?.talle || '';
-              const color = variant.attributes?.color || '';
-              const variantName = nombre + (talle || color ? ` - ${talle}${talle && color ? ' / ' : ''}${color}` : '');
-              
-              const variantVentaML = Number(variant.price || pVenta);
-              const variantVentaGeneral = variantVentaML - commissionFlatAmount;
-              const variantImgUrl = variant.imagen_url || imgUrl;
-              const variantStock = Number(variant.stock || 0);
+            if (tipo === 'simple') {
+              mock_stock.push({ id: mock_stock.length + 1, articulo_id: nextId, sucursal: "Mvd", cantidad: Number(inicial_mvd || 0) });
+              mock_stock.push({ id: mock_stock.length + 1, articulo_id: nextId, sucursal: "Pin", cantidad: Number(inicial_pin || 0) });
+            }
+          }
+        }
 
+        if (hasVariants) {
+          // Also handle mock articles for variants
+          let firstSavedVarItem: any = null;
+          for (const variant of parsedVariants) {
+            const variantSku = variant.sku || '';
+            if (!variantSku) continue;
+
+            // Extract attributes robustly
+            const attr = variant.attributes || variant.Attributes || {};
+            const talle = String(variant.talle || attr.talle || attr.Talle || attr.size || attr.Size || '').trim();
+            const color = String(variant.color || attr.color || attr.Color || '').trim();
+
+            let variantName = nombre.trim();
+            if (talle || color) {
+              const parts = [];
+              if (talle) parts.push(talle);
+              if (color) parts.push(color);
+              variantName += ` - ${parts.join(' / ')}`;
+            }
+            
+            const variantVentaGeneral = Number(variant.price || pVenta);
+            const variantVentaML = variantVentaGeneral + commissionFlatAmount;
+            const variantImgUrl = String(variant.imagen_url || variant.image_url || variant.imageUrl || variant.image || variant.imagen || imgUrl || '').trim();
+            
+            const stockMvd = Number(variant.stock_montevideo !== undefined ? variant.stock_montevideo : (variant.stock || 0));
+            const stockPin = Number(variant.stock_pinamar !== undefined ? variant.stock_pinamar : 0);
+
+            let matchVarItem: any = mock_articulos.find(a => a.codigo && a.codigo.toLowerCase() === variantSku.toLowerCase());
+            if (matchVarItem) {
+              matchVarItem.nombre = variantName;
+              matchVarItem.precio_venta = variantVentaGeneral;
+              matchVarItem.costo = cCosto;
+              matchVarItem.comision_ml = commissionFlatAmount;
+              matchVarItem.comision_ml_raw = comision_ml_raw || "";
+              matchVarItem.precio_venta_ml = variantVentaML;
+              matchVarItem.imagen_url = variantImgUrl;
+              matchVarItem.original_price = original_price !== undefined && original_price !== null && original_price !== '' ? Number(original_price) : null;
+              matchVarItem.description = description || '';
+              matchVarItem.category = category || '';
+              matchVarItem.subcategory = subcategory || '';
+              matchVarItem.featured = !!featured;
+              matchVarItem.paused = !!paused;
+              matchVarItem.is_3d = !!is_3d;
+              matchVarItem.consult_only = !!consult_only;
+              matchVarItem.categoria_id = categoria_id || null;
+              matchVarItem.subcategoria_id = subcategoria_id || null;
+
+              let mvdVar = mock_stock.find(s => s.articulo_id === matchVarItem.id && s.sucursal === "Mvd");
+              if (mvdVar) mvdVar.cantidad = stockMvd;
+              let pinVar = mock_stock.find(s => s.articulo_id === matchVarItem.id && s.sucursal === "Pin");
+              if (pinVar) pinVar.cantidad = stockPin;
+
+              if (!firstSavedVarItem) {
+                firstSavedVarItem = matchVarItem;
+              }
+            } else {
               const vNextId = mock_articulos.length > 0 ? Math.max(...mock_articulos.map(a => a.id)) + 1 : 1;
               const vItem = {
                 id: vNextId,
@@ -1817,10 +2054,15 @@ async function startServer() {
               };
               mock_articulos.push(vItem);
 
-              mock_stock.push({ id: mock_stock.length + 1, articulo_id: vNextId, sucursal: "Mvd", cantidad: variantStock });
-              mock_stock.push({ id: mock_stock.length + 1, articulo_id: vNextId, sucursal: "Pin", cantidad: 0 });
+              mock_stock.push({ id: mock_stock.length + 1, articulo_id: vNextId, sucursal: "Mvd", cantidad: stockMvd });
+              mock_stock.push({ id: mock_stock.length + 1, articulo_id: vNextId, sucursal: "Pin", cantidad: stockPin });
+
+              if (!firstSavedVarItem) {
+                firstSavedVarItem = vItem;
+              }
             }
           }
+          savedItem = firstSavedVarItem;
         } else if (tipo === 'compuesto' && Array.isArray(componentes)) {
           for (const comp of componentes) {
             mock_combos.push({
@@ -1869,7 +2111,7 @@ async function startServer() {
       const imgUrl = String(imagen_url || '');
 
       if (sql) {
-        const code = idToCode(id);
+        const code = (req.query.codigo as string) || (req.body.codigo as string) || idToCode(id);
         const check = await sql`SELECT precio_venta_ml, comision_ml, venta_price FROM stock WHERE id_code = ${code}`;
         if (check.length === 0) {
           return res.status(404).json({ error: "Artículo no encontrado." });
@@ -1968,11 +2210,93 @@ async function startServer() {
             WHERE id_code = ${code}
           `;
 
+          // Process variants in PUT: update/insert variant rows as separate independent articles
+          let parsedVariants: any[] = [];
+          try {
+            parsedVariants = typeof variants === 'string' ? JSON.parse(variants) : (variants || []);
+          } catch (e) {
+            console.error("Error parsing variants JSON in server PUT:", e);
+          }
+
+          if (Array.isArray(parsedVariants) && parsedVariants.length > 0) {
+            for (const variant of parsedVariants) {
+              const variantSku = variant.sku || '';
+              if (!variantSku) continue;
+
+              // Extract attributes robustly
+              const attr = variant.attributes || variant.Attributes || {};
+              const talle = String(variant.talle || attr.talle || attr.Talle || attr.size || attr.Size || '').trim();
+              const color = String(variant.color || attr.color || attr.Color || '').trim();
+
+              let variantName = nombre.trim();
+              if (talle || color) {
+                const parts = [];
+                if (talle) parts.push(talle);
+                if (color) parts.push(color);
+                variantName += ` - ${parts.join(' / ')}`;
+              }
+              
+              const variantVentaML = Number(variant.price || pVenta);
+              const variantVentaGeneral = variantVentaML - commissionFlatAmount;
+              const variantImgUrl = String(variant.imagen_url || variant.image_url || variant.imageUrl || variant.image || variant.imagen || imgUrl || '').trim();
+              const variantStock = Number(variant.stock || 0);
+
+              // Check if the variant already exists to preserve its individual stock or update the primary warehouse
+              const existingVarRows = await sql`SELECT stock_montevideo, stock_pinamar FROM stock WHERE id_code = ${variantSku}`;
+              let stockPin = 0;
+              let stockMvd = 0;
+              if (existingVarRows.length > 0) {
+                stockMvd = Number(existingVarRows[0].stock_montevideo || 0);
+                stockPin = Number(existingVarRows[0].stock_pinamar || 0);
+              } else {
+                const isMvd = req.body.creador_sucursal === 'Montevideo' || req.body.creador_sucursal === 'Mvd' || true;
+                stockMvd = isMvd ? variantStock : 0;
+                stockPin = isMvd ? 0 : variantStock;
+              }
+
+              await sql`
+                INSERT INTO stock (
+                  id_code, name, compra_price, comision_ml, venta_price, precio_venta_ml, 
+                  stock_pinamar, stock_montevideo, is_favorite, image_url, comision_ml_raw,
+                  original_price, description, category, subcategory, featured, paused, is_3d, consult_only,
+                  categoria_id, subcategoria_id, imagenes, variants
+                )
+                VALUES (
+                  ${variantSku}, ${variantName}, ${cCosto}, ${commissionFlatAmount}, ${variantVentaGeneral}, ${variantVentaML}, 
+                  ${stockPin}, ${stockMvd}, false, ${variantImgUrl}, ${comision_ml_raw !== undefined && comision_ml_raw !== null ? String(comision_ml_raw) : null},
+                  ${original_price !== undefined && original_price !== null && original_price !== '' ? Number(original_price) : null},
+                  ${description || ''}, ${category || ''}, ${subcategory || ''}, 
+                  ${!!featured}, ${!!paused}, ${!!is_3d}, ${!!consult_only},
+                  ${categoria_id || null}, ${subcategoria_id || null}, '[]', '[]'
+                )
+                ON CONFLICT (id_code) DO UPDATE
+                SET name = EXCLUDED.name,
+                    compra_price = EXCLUDED.compra_price,
+                    comision_ml = EXCLUDED.comision_ml,
+                    venta_price = EXCLUDED.venta_price,
+                    precio_venta_ml = EXCLUDED.precio_venta_ml,
+                    image_url = EXCLUDED.image_url,
+                    comision_ml_raw = EXCLUDED.comision_ml_raw,
+                    original_price = EXCLUDED.original_price,
+                    description = EXCLUDED.description,
+                    category = EXCLUDED.category,
+                    subcategory = EXCLUDED.subcategory,
+                    featured = EXCLUDED.featured,
+                    paused = EXCLUDED.paused,
+                    is_3d = EXCLUDED.is_3d,
+                    consult_only = EXCLUDED.consult_only,
+                    categoria_id = EXCLUDED.categoria_id,
+                    subcategoria_id = EXCLUDED.subcategoria_id
+              `;
+            }
+          }
+
           // Delete any combo definitions because it is now a simple article
           await sql`DELETE FROM combos WHERE combo_code = ${code}`;
         }
       } else {
-        const item = mock_articulos.find(a => a.id === id);
+        const queryCode = (req.query.codigo as string) || (req.body.codigo as string);
+        const item = mock_articulos.find(a => a.id === id || (queryCode && a.codigo === queryCode));
         if (!item) {
           return res.status(404).json({ error: "Artículo no encontrado." });
         }
@@ -2025,6 +2349,89 @@ async function startServer() {
           let pinItem = mock_stock.find(s => s.articulo_id === id && s.sucursal === "Pin");
           if (pinItem) pinItem.cantidad = Number(pin_stock || 0);
           else mock_stock.push({ id: mock_stock.length + 1, articulo_id: id, sucursal: "Pin", cantidad: Number(pin_stock || 0) });
+
+          // Update/insert mock variants as separate items
+          let parsedVariants: any[] = [];
+          try {
+            parsedVariants = typeof variants === 'string' ? JSON.parse(variants) : (variants || []);
+          } catch (e) {}
+
+          if (Array.isArray(parsedVariants) && parsedVariants.length > 0) {
+            for (const variant of parsedVariants) {
+              const variantSku = variant.sku || '';
+              if (!variantSku) continue;
+
+              // Extract attributes robustly
+              const attr = variant.attributes || variant.Attributes || {};
+              const talle = String(variant.talle || attr.talle || attr.Talle || attr.size || attr.Size || '').trim();
+              const color = String(variant.color || attr.color || attr.Color || '').trim();
+
+              let variantName = nombre.trim();
+              if (talle || color) {
+                const parts = [];
+                if (talle) parts.push(talle);
+                if (color) parts.push(color);
+                variantName += ` - ${parts.join(' / ')}`;
+              }
+              
+              const variantVentaML = Number(variant.price || pVenta);
+              const variantVentaGeneral = variantVentaML - commissionFlatAmount;
+              const variantImgUrl = String(variant.imagen_url || variant.image_url || variant.imageUrl || variant.image || variant.imagen || imgUrl || '').trim();
+              const variantStock = Number(variant.stock || 0);
+
+              const matchVarItem: any = mock_articulos.find(a => a.codigo && a.codigo.toLowerCase() === variantSku.toLowerCase());
+              if (matchVarItem) {
+                matchVarItem.nombre = variantName;
+                matchVarItem.precio_venta = variantVentaGeneral;
+                matchVarItem.costo = cCosto;
+                matchVarItem.comision_ml = commissionFlatAmount;
+                matchVarItem.comision_ml_raw = comision_ml_raw || "";
+                matchVarItem.precio_venta_ml = variantVentaML;
+                matchVarItem.imagen_url = variantImgUrl;
+                matchVarItem.original_price = original_price !== undefined && original_price !== null && original_price !== '' ? Number(original_price) : null;
+                matchVarItem.description = description || '';
+                matchVarItem.category = category || '';
+                matchVarItem.subcategory = subcategory || '';
+                matchVarItem.featured = !!featured;
+                matchVarItem.paused = !!paused;
+                matchVarItem.is_3d = !!is_3d;
+                matchVarItem.consult_only = !!consult_only;
+                matchVarItem.categoria_id = categoria_id || null;
+                matchVarItem.subcategoria_id = subcategoria_id || null;
+              } else {
+                const vNextId = mock_articulos.length > 0 ? Math.max(...mock_articulos.map(a => a.id)) + 1 : 1;
+                const vItem = {
+                  id: vNextId,
+                  codigo: variantSku,
+                  nombre: variantName,
+                  tipo: 'simple',
+                  precio_venta: variantVentaGeneral,
+                  costo: cCosto,
+                  comision_ml: commissionFlatAmount,
+                  comision_ml_raw: comision_ml_raw || "",
+                  precio_venta_ml: variantVentaML,
+                  imagen_url: variantImgUrl,
+                  original_price: original_price !== undefined && original_price !== null && original_price !== '' ? Number(original_price) : null,
+                  description: description || '',
+                  category: category || '',
+                  subcategory: subcategory || '',
+                  featured: !!featured,
+                  paused: !!paused,
+                  is_3d: !!is_3d,
+                  consult_only: !!consult_only,
+                  categoria_id: categoria_id || null,
+                  subcategoria_id: subcategoria_id || null,
+                  imagenes: '[]',
+                  variants: '[]'
+                };
+                mock_articulos.push(vItem);
+
+                const isMvd = req.body.creador_sucursal === 'Montevideo' || req.body.creador_sucursal === 'Mvd' || true;
+                mock_stock.push({ id: mock_stock.length + 1, articulo_id: vNextId, sucursal: "Mvd", cantidad: isMvd ? variantStock : 0 });
+                mock_stock.push({ id: mock_stock.length + 1, articulo_id: vNextId, sucursal: "Pin", cantidad: isMvd ? 0 : variantStock });
+              }
+            }
+          }
         } else if (item.tipo === 'compuesto') {
           // Clear old combos and write new ones
           mock_combos = mock_combos.filter(c => c.articulo_compuesto_id !== id);
@@ -2077,12 +2484,13 @@ async function startServer() {
   app.delete('/api/articulos/:id', async (req, res) => {
     try {
       const id = Number(req.params.id);
+      const queryCode = req.query.codigo as string;
       if (sql) {
-        const code = idToCode(id);
+        const code = queryCode || idToCode(id);
         await sql`DELETE FROM stock WHERE id_code = ${code}`;
         await sql`DELETE FROM combos WHERE combo_code = ${code} OR component_code = ${code}`;
       } else {
-        const index = mock_articulos.findIndex(a => a.id === id);
+        const index = mock_articulos.findIndex(a => a.id === id || (queryCode && a.codigo === queryCode));
         if (index !== -1) {
           mock_articulos.splice(index, 1);
         }
@@ -4773,7 +5181,7 @@ async function startServer() {
       const lastMessage = messages[messages.length - 1];
       const modelToUse = "gemini-3.5-flash";
 
-      const chatCompletion = await aiClient.models.generateContent({
+      const chatCompletion = await getAiClient().models.generateContent({
         model: modelToUse,
         contents: lastMessage.text || lastMessage.content || "Explica cómo funcionan los combos.",
         config: {
@@ -4847,7 +5255,7 @@ async function startServer() {
       - Rellena la cantidad y el costo_unitario de compra de cada artículo. Presta estricta atención a los centavos en los costos unitarios (ej. si cuesta $45.15 extrae exactamente 45.15).
       `;
 
-      const response = await aiClient.models.generateContent({
+      const response = await getAiClient().models.generateContent({
         model: 'gemini-3.5-flash',
         contents: [imagePart, { text: promptPart }],
         config: {
@@ -5186,7 +5594,7 @@ async function startServer() {
         - El tono debe ser super profesional pero sumamente magnético y humano. No añadas metadatos del sistema ni texto introductorio ("Aquí tienes tu post:"). Responde ÚNICAMENTE la publicación lista para copiar y pegar.
       `;
 
-      const response = await aiClient.models.generateContent({
+      const response = await getAiClient().models.generateContent({
         model: "gemini-3.5-flash",
         contents: prompt,
         config: {
@@ -5236,7 +5644,7 @@ async function startServer() {
         Escribe una justificación de 3-4 párrafos estructurados explicando la viabilidad, estrategia de precios psicológicos a usar (ej: terminar en .90 o .95), volumen requerido para amortizar, y consejos específicos sobre Mercado Libre en base a este producto. Responde en español con formato Markdown limpio.
       `;
 
-      const response = await aiClient.models.generateContent({
+      const response = await getAiClient().models.generateContent({
         model: "gemini-3.5-flash",
         contents: prompt,
         config: {
@@ -5279,7 +5687,7 @@ async function startServer() {
         Sé muy directo, corporativo y utiliza viñetas dinámicas detalladas.
       `;
 
-      const response = await aiClient.models.generateContent({
+      const response = await getAiClient().models.generateContent({
         model: "gemini-3.5-flash",
         contents: prompt
       });
