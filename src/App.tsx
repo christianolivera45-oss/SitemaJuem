@@ -2829,11 +2829,6 @@ export default function App() {
   });
 
   const filteredCatalog = catalog.filter(c => {
-    // Hide variations from the top-level main index grid/list, so we only display 1 primary article with nested variants
-    if (c.codigo && variantSkusSet.has(c.codigo.toLowerCase().trim())) {
-      return false;
-    }
-
     // General search query (by product name or SKU/code)
     if (searchQuery.trim()) {
       const matchGeneral = matchAdvancedSearch([c.nombre, c.codigo], searchQuery);
