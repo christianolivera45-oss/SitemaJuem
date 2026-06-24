@@ -168,14 +168,7 @@ async function syncStockToEcommerce(id_code: string) {
     const totalStock = mvd + pin;
 
     // 2. Perform HTTP POST request to the e-commerce endpoint in background
-    let ecomUrl = process.env.SYNC_PRODUCT_URL;
-    if (!ecomUrl) {
-      if (process.env.NODE_ENV === 'production') {
-        ecomUrl = 'https://juem.com.uy/api/integrations/sync-product';
-      } else {
-        ecomUrl = 'https://ais-dev-orx6ehgfbywqicdsl6udb6-240256689663.us-east1.run.app/api/integrations/sync-product';
-      }
-    }
+    let ecomUrl = process.env.SYNC_PRODUCT_URL || 'https://juem.com.uy/api/integrations/sync-product';
     const secretKey = process.env.INTEGRATION_SECRET || 'sync_stock_default_secret_3322';
 
     const bodyData: any = {
@@ -2125,19 +2118,8 @@ async function startServer() {
         }
       }
 
-      // Sync stock with Web E-commerce on creation if requested
-      if (sync_to_web) {
-        syncStockToEcommerce(codigo);
-
-        // Async Sync new article creation details with Web E-commerce
-        if (savedItem) {
-          syncNewArticleToEcommerce({
-            ...savedItem,
-            mvd_stock: Number(inicial_mvd || 0),
-            pin_stock: Number(inicial_pin || 0)
-          });
-        }
-      }
+      // Sync stock and product details with Web E-commerce unconditionally on creation
+      syncStockToEcommerce(codigo);
 
       res.json({ success: true, item: savedItem });
     } catch (err: any) {
@@ -2239,6 +2221,25 @@ async function startServer() {
             }
           }
         } else {
+          let parsedVariants: any[] = [];
+          try {
+            parsedVariants = typeof variants === 'string' ? JSON.parse(variants) : (variants || []);
+          } catch (e) {
+            console.error("Error parsing variants JSON in server PUT:", e);
+          }
+
+          let parentStockPin = Number(pin_stock || 0);
+          let parentStockMvd = Number(mvd_stock || 0);
+
+          if (Array.isArray(parsedVariants) && parsedVariants.length > 0) {
+            parentStockPin = 0;
+            parentStockMvd = 0;
+            for (const variant of parsedVariants) {
+              parentStockMvd += Number(variant.stock_montevideo !== undefined ? variant.stock_montevideo : (variant.stock || 0));
+              parentStockPin += Number(variant.stock_pinamar !== undefined ? variant.stock_pinamar : 0);
+            }
+          }
+
           await sql`
             UPDATE stock
             SET name = ${nombre},
@@ -2247,8 +2248,8 @@ async function startServer() {
                 venta_price = ${pVenta},
                 precio_venta_ml = ${pVentaML},
                 image_url = ${imgUrl},
-                stock_montevideo = ${Number(mvd_stock || 0)},
-                stock_pinamar = ${Number(pin_stock || 0)},
+                stock_montevideo = ${parentStockMvd},
+                stock_pinamar = ${parentStockPin},
                 comision_ml_raw = ${comision_ml_raw !== undefined && comision_ml_raw !== null ? String(comision_ml_raw) : null},
                 original_price = ${original_price !== undefined && original_price !== null && original_price !== '' ? Number(original_price) : null},
                 description = ${description || ''},
@@ -2268,14 +2269,6 @@ async function startServer() {
                 variants = ${serializedVariants}
             WHERE id_code = ${code}
           `;
-
-          // Process variants in PUT: update/insert variant rows as separate independent articles
-          let parsedVariants: any[] = [];
-          try {
-            parsedVariants = typeof variants === 'string' ? JSON.parse(variants) : (variants || []);
-          } catch (e) {
-            console.error("Error parsing variants JSON in server PUT:", e);
-          }
 
           if (Array.isArray(parsedVariants) && parsedVariants.length > 0) {
             for (const variant of parsedVariants) {
