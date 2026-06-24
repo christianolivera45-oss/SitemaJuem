@@ -1808,9 +1808,8 @@ async function startServer() {
           for (const variant of parsedVariants) {
             const variantSku = variant.sku || '';
             if (!variantSku) continue;
-            // Skip saving the variant as a separate row if it shares the exact SKU of the parent product,
-            // to prevent overwriting the parent product's publication metadata and variants list.
-            if (variantSku.toLowerCase() === codigo.toLowerCase()) continue;
+            // Save the variant as a separate row even if it shares the exact SKU of the parent product,
+            // updating its specific name, image, and stock without losing parent metadata.
 
             // Extract attributes robustly
             const attr = variant.attributes || variant.Attributes || {};
@@ -2025,9 +2024,8 @@ async function startServer() {
           for (const variant of parsedVariants) {
             const variantSku = variant.sku || '';
             if (!variantSku) continue;
-            // Skip saving the variant as a separate item if it shares the exact SKU of the parent product,
-            // to prevent overwriting the parent product's publication metadata and variants list.
-            if (variantSku.toLowerCase() === codigo.toLowerCase()) continue;
+            // Save the variant as a separate item even if it shares the exact SKU of the parent product,
+            // updating its specific name, image, and stock without losing parent metadata.
 
             // Extract attributes robustly
             const attr = variant.attributes || variant.Attributes || {};
@@ -2274,9 +2272,8 @@ async function startServer() {
             for (const variant of parsedVariants) {
               const variantSku = variant.sku || '';
               if (!variantSku) continue;
-              // Skip saving the variant as a separate row if it shares the exact SKU of the parent product,
-              // to prevent overwriting the parent product's publication metadata and variants list.
-              if (variantSku.toLowerCase() === code.toLowerCase()) continue;
+              // Save the variant as a separate row even if it shares the exact SKU of the parent product,
+              // updating its specific name, image, and stock without losing parent metadata.
 
               // Extract attributes robustly
               const attr = variant.attributes || variant.Attributes || {};
@@ -2405,9 +2402,8 @@ async function startServer() {
             for (const variant of parsedVariants) {
               const variantSku = variant.sku || '';
               if (!variantSku) continue;
-              // Skip saving the variant as a separate item if it shares the exact SKU of the parent product,
-              // to prevent overwriting the parent product's publication metadata and variants list.
-              if (variantSku.toLowerCase() === item.codigo.toLowerCase()) continue;
+              // Save the variant as a separate item even if it shares the exact SKU of the parent product,
+              // updating its specific name, image, and stock without losing parent metadata.
 
               // Extract attributes robustly
               const attr = variant.attributes || variant.Attributes || {};
