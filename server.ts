@@ -572,6 +572,10 @@ async function initDb() {
         consult_only BOOLEAN DEFAULT false,
         categoria_id TEXT DEFAULT NULL,
         subcategoria_id TEXT DEFAULT NULL,
+        categoria_id_sec TEXT DEFAULT NULL,
+        subcategoria_id_sec TEXT DEFAULT NULL,
+        category_sec TEXT DEFAULT '',
+        subcategory_sec TEXT DEFAULT '',
         imagenes TEXT DEFAULT NULL,
         variants TEXT DEFAULT NULL
       );
@@ -816,6 +820,10 @@ async function initDb() {
       await sql`ALTER TABLE stock ADD COLUMN IF NOT EXISTS consult_only BOOLEAN DEFAULT false`;
       await sql`ALTER TABLE stock ADD COLUMN IF NOT EXISTS categoria_id TEXT DEFAULT NULL`;
       await sql`ALTER TABLE stock ADD COLUMN IF NOT EXISTS subcategoria_id TEXT DEFAULT NULL`;
+      await sql`ALTER TABLE stock ADD COLUMN IF NOT EXISTS categoria_id_sec TEXT DEFAULT NULL`;
+      await sql`ALTER TABLE stock ADD COLUMN IF NOT EXISTS subcategoria_id_sec TEXT DEFAULT NULL`;
+      await sql`ALTER TABLE stock ADD COLUMN IF NOT EXISTS category_sec TEXT DEFAULT ''`;
+      await sql`ALTER TABLE stock ADD COLUMN IF NOT EXISTS subcategory_sec TEXT DEFAULT ''`;
       await sql`ALTER TABLE stock ADD COLUMN IF NOT EXISTS imagenes TEXT DEFAULT NULL`;
       await sql`ALTER TABLE stock ADD COLUMN IF NOT EXISTS variants TEXT DEFAULT NULL`;
     } catch (alterErr) {
@@ -1649,7 +1657,7 @@ async function startServer() {
   // POST: Add new simple or compound article
   app.post('/api/articulos', async (req, res) => {
     try {
-      const { codigo, nombre, tipo, precio_venta, costo, componentes, inicial_mvd, inicial_pin, comision_ml, precio_venta_ml, imagen_url, comision_ml_raw, original_price, description, category, subcategory, featured, paused, is_3d, consult_only, categoria_id, subcategoria_id, imagenes, variants } = req.body;
+      const { codigo, nombre, tipo, precio_venta, costo, componentes, inicial_mvd, inicial_pin, comision_ml, precio_venta_ml, imagen_url, comision_ml_raw, original_price, description, category, subcategory, featured, paused, is_3d, consult_only, categoria_id, subcategoria_id, imagenes, variants, categoria_id_sec, subcategoria_id_sec, category_sec, subcategory_sec, sync_to_web } = req.body;
       
       if (!codigo || !nombre || !tipo) {
         return res.status(400).json({ error: "Código, nombre y tipo son campos requeridos." });
@@ -1699,7 +1707,8 @@ async function startServer() {
               id_code, name, compra_price, comision_ml, venta_price, precio_venta_ml, 
               stock_pinamar, stock_montevideo, is_favorite, image_url, comision_ml_raw,
               original_price, description, category, subcategory, featured, paused, is_3d, consult_only,
-              categoria_id, subcategoria_id, imagenes, variants
+              categoria_id, subcategoria_id, imagenes, variants,
+              categoria_id_sec, subcategoria_id_sec, category_sec, subcategory_sec
             )
             VALUES (
               ${codigo}, ${nombre}, ${cCosto}, ${commissionFlatAmount}, ${pVenta}, ${Number(precio_venta_ml || pVenta)}, 
@@ -1707,7 +1716,8 @@ async function startServer() {
               ${original_price !== undefined && original_price !== null && original_price !== '' ? Number(original_price) : null},
               ${description || ''}, ${category || ''}, ${subcategory || ''}, 
               ${!!featured}, ${!!paused}, ${!!is_3d}, ${!!consult_only},
-              ${categoria_id || null}, ${subcategoria_id || null}, ${serializedImagenes}, ${serializedVariants}
+              ${categoria_id || null}, ${subcategoria_id || null}, ${serializedImagenes}, ${serializedVariants},
+              ${categoria_id_sec || null}, ${subcategoria_id_sec || null}, ${category_sec || ''}, ${subcategory_sec || ''}
             )
             ON CONFLICT (id_code) DO UPDATE
             SET name = EXCLUDED.name,
@@ -1727,6 +1737,10 @@ async function startServer() {
                 consult_only = EXCLUDED.consult_only,
                 categoria_id = EXCLUDED.categoria_id,
                 subcategoria_id = EXCLUDED.subcategoria_id,
+                categoria_id_sec = EXCLUDED.categoria_id_sec,
+                subcategoria_id_sec = EXCLUDED.subcategoria_id_sec,
+                category_sec = EXCLUDED.category_sec,
+                subcategory_sec = EXCLUDED.subcategory_sec,
                 imagenes = EXCLUDED.imagenes,
                 variants = EXCLUDED.variants
           `;
@@ -1763,7 +1777,8 @@ async function startServer() {
                 id_code, name, compra_price, comision_ml, venta_price, precio_venta_ml, 
                 stock_pinamar, stock_montevideo, is_favorite, image_url, comision_ml_raw,
                 original_price, description, category, subcategory, featured, paused, is_3d, consult_only,
-                categoria_id, subcategoria_id, imagenes, variants
+                categoria_id, subcategoria_id, imagenes, variants,
+                categoria_id_sec, subcategoria_id_sec, category_sec, subcategory_sec
               )
               VALUES (
                 ${variantSku}, ${variantName}, ${cCosto}, ${commissionFlatAmount}, ${variantVentaGeneral}, ${variantVentaML}, 
@@ -1771,7 +1786,8 @@ async function startServer() {
                 ${original_price !== undefined && original_price !== null && original_price !== '' ? Number(original_price) : null},
                 ${description || ''}, ${category || ''}, ${subcategory || ''}, 
                 ${!!featured}, ${!!paused}, ${!!is_3d}, ${!!consult_only},
-                ${categoria_id || null}, ${subcategoria_id || null}, '[]', '[]'
+                ${categoria_id || null}, ${subcategoria_id || null}, '[]', '[]',
+                ${categoria_id_sec || null}, ${subcategoria_id_sec || null}, ${category_sec || ''}, ${subcategory_sec || ''}
               )
               ON CONFLICT (id_code) DO UPDATE
               SET name = EXCLUDED.name,
@@ -1790,7 +1806,11 @@ async function startServer() {
                   is_3d = EXCLUDED.is_3d,
                   consult_only = EXCLUDED.consult_only,
                   categoria_id = EXCLUDED.categoria_id,
-                  subcategoria_id = EXCLUDED.subcategoria_id
+                  subcategoria_id = EXCLUDED.subcategoria_id,
+                  categoria_id_sec = EXCLUDED.categoria_id_sec,
+                  subcategoria_id_sec = EXCLUDED.subcategoria_id_sec,
+                  category_sec = EXCLUDED.category_sec,
+                  subcategory_sec = EXCLUDED.subcategory_sec
             `;
           }
         }
@@ -1835,6 +1855,10 @@ async function startServer() {
             consult_only: !!consult_only,
             categoria_id: categoria_id || null,
             subcategoria_id: subcategoria_id || null,
+            categoria_id_sec: categoria_id_sec || null,
+            subcategoria_id_sec: subcategoria_id_sec || null,
+            category_sec: category_sec || '',
+            subcategory_sec: subcategory_sec || '',
             imagenes: '[]',
             variants: '[]'
           };
@@ -1861,6 +1885,10 @@ async function startServer() {
             consult_only: !!consult_only,
             categoria_id: categoria_id || null,
             subcategoria_id: subcategoria_id || null,
+            categoria_id_sec: categoria_id_sec || null,
+            subcategoria_id_sec: subcategoria_id_sec || null,
+            category_sec: category_sec || '',
+            subcategory_sec: subcategory_sec || '',
             imagenes: serializedImagenes,
             variants: serializedVariants
           };
@@ -2076,16 +2104,18 @@ async function startServer() {
         }
       }
 
-      // Sync stock with Web E-commerce
-      syncStockToEcommerce(codigo);
+      // Sync stock with Web E-commerce on creation if requested
+      if (sync_to_web) {
+        syncStockToEcommerce(codigo);
 
-      // Async Sync new article creation details with Web E-commerce
-      if (savedItem) {
-        syncNewArticleToEcommerce({
-          ...savedItem,
-          mvd_stock: Number(inicial_mvd || 0),
-          pin_stock: Number(inicial_pin || 0)
-        });
+        // Async Sync new article creation details with Web E-commerce
+        if (savedItem) {
+          syncNewArticleToEcommerce({
+            ...savedItem,
+            mvd_stock: Number(inicial_mvd || 0),
+            pin_stock: Number(inicial_pin || 0)
+          });
+        }
       }
 
       res.json({ success: true, item: savedItem });
@@ -2099,7 +2129,7 @@ async function startServer() {
   app.put('/api/articulos/:id', async (req, res) => {
     try {
       const id = Number(req.params.id);
-      const { nombre, precio_venta, costo, comision_ml, imagen_url, mvd_stock, pin_stock, componentes, tipo, precio_venta_ml, comision_ml_raw, original_price, description, category, subcategory, featured, paused, is_3d, consult_only, categoria_id, subcategoria_id, imagenes, variants } = req.body;
+      const { nombre, precio_venta, costo, comision_ml, imagen_url, mvd_stock, pin_stock, componentes, tipo, precio_venta_ml, comision_ml_raw, original_price, description, category, subcategory, featured, paused, is_3d, consult_only, categoria_id, subcategoria_id, imagenes, variants, categoria_id_sec, subcategoria_id_sec, category_sec, subcategory_sec } = req.body;
 
       if (!nombre) {
         return res.status(400).json({ error: "Nombre es requerido." });
@@ -2165,6 +2195,10 @@ async function startServer() {
                 consult_only = ${!!consult_only},
                 categoria_id = ${categoria_id || null},
                 subcategoria_id = ${subcategoria_id || null},
+                categoria_id_sec = ${categoria_id_sec || null},
+                subcategoria_id_sec = ${subcategoria_id_sec || null},
+                category_sec = ${category_sec || ''},
+                subcategory_sec = ${subcategory_sec || ''},
                 imagenes = ${serializedImagenes},
                 variants = ${serializedVariants}
             WHERE id_code = ${code}
@@ -2205,6 +2239,10 @@ async function startServer() {
                 consult_only = ${!!consult_only},
                 categoria_id = ${categoria_id || null},
                 subcategoria_id = ${subcategoria_id || null},
+                categoria_id_sec = ${categoria_id_sec || null},
+                subcategoria_id_sec = ${subcategoria_id_sec || null},
+                category_sec = ${category_sec || ''},
+                subcategory_sec = ${subcategory_sec || ''},
                 imagenes = ${serializedImagenes},
                 variants = ${serializedVariants}
             WHERE id_code = ${code}

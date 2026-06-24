@@ -85,6 +85,10 @@ interface Article {
   consult_only?: boolean;
   categoria_id?: string | null;
   subcategoria_id?: string | null;
+  categoria_id_sec?: string | null;
+  subcategoria_id_sec?: string | null;
+  category_sec?: string;
+  subcategory_sec?: string;
   imagenes?: string | null;
   variants?: string | null;
 }
@@ -312,6 +316,10 @@ export default function App() {
     consult_only: false,
     categoria_id: '',
     subcategoria_id: '',
+    categoria_id_sec: '',
+    subcategoria_id_sec: '',
+    category_sec: '',
+    subcategory_sec: '',
     imagenes: '',
     variants: '[]'
   });
@@ -1151,6 +1159,10 @@ export default function App() {
     consult_only: false,
     categoria_id: '',
     subcategoria_id: '',
+    categoria_id_sec: '',
+    subcategoria_id_sec: '',
+    category_sec: '',
+    subcategory_sec: '',
     imagenes: '',
     variants: '[]'
   });
@@ -1450,9 +1462,14 @@ export default function App() {
           consult_only: newArticle.consult_only,
           categoria_id: newArticle.categoria_id,
           subcategoria_id: newArticle.subcategoria_id,
+          categoria_id_sec: newArticle.categoria_id_sec,
+          subcategoria_id_sec: newArticle.subcategoria_id_sec,
+          category_sec: newArticle.category_sec,
+          subcategory_sec: newArticle.subcategory_sec,
           imagenes: newArticle.imagenes,
           variants: newArticle.variants,
-          creador_sucursal: sessionUser?.sucursal || 'Pin'
+          creador_sucursal: sessionUser?.sucursal || 'Pin',
+          sync_to_web: true
         })
       });
 
@@ -1481,6 +1498,10 @@ export default function App() {
         consult_only: false,
         categoria_id: '',
         subcategoria_id: '',
+        categoria_id_sec: '',
+        subcategoria_id_sec: '',
+        category_sec: '',
+        subcategory_sec: '',
         imagenes: '',
         variants: '[]'
       });
@@ -1543,6 +1564,10 @@ export default function App() {
       consult_only: !!art.consult_only,
       categoria_id: art.categoria_id || '',
       subcategoria_id: art.subcategoria_id || '',
+      categoria_id_sec: art.categoria_id_sec || '',
+      subcategoria_id_sec: art.subcategoria_id_sec || '',
+      category_sec: art.category_sec || '',
+      subcategory_sec: art.subcategory_sec || '',
       imagenes: art.imagenes || '',
       variants: art.variants || '[]'
     });
@@ -1592,6 +1617,10 @@ export default function App() {
           consult_only: editArticleForm.consult_only,
           categoria_id: editArticleForm.categoria_id,
           subcategoria_id: editArticleForm.subcategoria_id,
+          categoria_id_sec: editArticleForm.categoria_id_sec,
+          subcategoria_id_sec: editArticleForm.subcategoria_id_sec,
+          category_sec: editArticleForm.category_sec,
+          subcategory_sec: editArticleForm.subcategory_sec,
           imagenes: editArticleForm.imagenes,
           variants: editArticleForm.variants
         })
@@ -3296,7 +3325,7 @@ export default function App() {
                       className="flex items-center justify-center gap-2 px-5 py-2.5 bg-gradient-to-r from-indigo-600 to-indigo-700 hover:from-indigo-700 hover:to-indigo-800 text-white rounded-xl text-xs font-extrabold shadow-md hover:shadow-lg transition-all focus:outline-none focus:ring-2 focus:ring-indigo-550 whitespace-nowrap cursor-pointer uppercase tracking-wider"
                     >
                       <Plus className="w-4 h-4 text-white" />
-                      <span>Agregar Artículo / Combo</span>
+                      <span>Crear Artículo</span>
                     </button>
                   )}
                 </div>
@@ -10596,15 +10625,94 @@ export default function App() {
                         )}
                       </div>
 
-                      {/* Descripción Corta */}
+                      {/* Categorías Adicionales / Secundarias */}
+                      <div className="md:col-span-2 bg-slate-50 border border-slate-100 rounded-xl p-3.5 space-y-3">
+                        <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">Categorías Adicionales / Secundarias (se marcan en la web)</span>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+                          {/* Categoría Secundaria */}
+                          <div className="space-y-1.5">
+                            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Categoría E-Commerce Secundaria</label>
+                            {ecomCategories.length > 0 ? (
+                              <select
+                                value={editArticleForm.categoria_id_sec || ""}
+                                onChange={(e) => {
+                                  const selectedId = e.target.value;
+                                  const catObj = ecomCategories.find(c => String(c.id) === String(selectedId));
+                                  setEditArticleForm(prev => ({
+                                    ...prev,
+                                    categoria_id_sec: selectedId,
+                                    category_sec: catObj ? catObj.nombre : "",
+                                    subcategoria_id_sec: "",
+                                    subcategory_sec: ""
+                                  }));
+                                }}
+                                className="w-full bg-white border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs text-slate-800 font-bold focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                              >
+                                <option value="">-- Seleccionar Categoría --</option>
+                                {ecomCategories.map(cat => (
+                                  <option key={`edit_sec_cat_${cat.id}`} value={cat.id}>{cat.nombre}</option>
+                                ))}
+                              </select>
+                            ) : (
+                              <input
+                                type="text"
+                                value={editArticleForm.category_sec || ""}
+                                onChange={(e) => setEditArticleForm(prev => ({ ...prev, category_sec: e.target.value }))}
+                                placeholder="Ej: Cuadros, Iluminación"
+                                className="w-full bg-white border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs text-slate-800 font-bold focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                              />
+                            )}
+                          </div>
+
+                          {/* Subcategoría Secundaria */}
+                          <div className="space-y-1.5">
+                            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Subcategoría E-Commerce Secundaria</label>
+                            {ecomSubcategories.length > 0 ? (
+                              <select
+                                value={editArticleForm.subcategoria_id_sec || ""}
+                                onChange={(e) => {
+                                  const selectedId = e.target.value;
+                                  const subcatObj = ecomSubcategories.find(s => String(s.id) === String(selectedId));
+                                  setEditArticleForm(prev => ({
+                                    ...prev,
+                                    subcategoria_id_sec: selectedId,
+                                    subcategory_sec: subcatObj ? subcatObj.nombre : ""
+                                  }));
+                                }}
+                                className="w-full bg-white border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs text-slate-800 font-bold focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                              >
+                                <option value="">-- Seleccionar Subcategoría --</option>
+                                {ecomSubcategories
+                                  .filter(sub => !editArticleForm.categoria_id_sec || String(sub.categoria_id) === String(editArticleForm.categoria_id_sec))
+                                  .map(sub => (
+                                    <option key={`edit_sec_subcat_${sub.id}`} value={sub.id}>{sub.nombre}</option>
+                                  ))}
+                              </select>
+                            ) : (
+                              <input
+                                type="text"
+                                value={editArticleForm.subcategory_sec || ""}
+                                onChange={(e) => setEditArticleForm(prev => ({ ...prev, subcategory_sec: e.target.value }))}
+                                placeholder="Ej: Cuadros Trípticos"
+                                className="w-full bg-white border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs text-slate-800 font-bold focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                              />
+                            )}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Descripción E-Commerce */}
                       <div className="space-y-1.5">
-                        <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">Descripción E-Commerce</label>
-                        <input
-                          type="text"
+                        <div className="flex justify-between items-center">
+                          <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">Descripción E-Commerce</label>
+                          <span className="text-[9px] text-slate-400 font-medium font-mono">Saltos de línea permitidos</span>
+                        </div>
+                        <textarea
+                          rows={6}
                           value={editArticleForm.description}
                           onChange={(e) => setEditArticleForm(prev => ({ ...prev, description: e.target.value }))}
-                          placeholder="Ej: Set de 3 cuadros impresos..."
-                          className="w-full bg-white border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs text-slate-800 font-bold focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                          placeholder="Escribe una descripción completa e ilustrativa para tu e-commerce..."
+                          className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2.5 text-xs text-slate-700 font-medium focus:ring-2 focus:ring-indigo-500 focus:outline-none leading-relaxed resize-y shadow-sm"
                         />
                       </div>
 
@@ -12196,48 +12304,98 @@ export default function App() {
                     </div>
 
                     {/* Categorías Adicionales / Secundarias */}
-                    <div className="space-y-2">
-                      <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Categorías Adicionales / Secundarias (las seleccionadas se marcan en la web)</label>
-                      <div className="flex flex-wrap gap-2">
-                        {['Informática', 'Ropa', 'Hogar', 'Gamer', 'Personalizados'].map(tag => {
-                          const isSelected = newArticle.description.includes(`[Tag: ${tag}]`);
-                          return (
-                            <button
-                              type="button"
-                              key={`sec_category_${tag}`}
-                              onClick={() => {
-                                setNewArticle(prev => {
-                                  let currentDesc = prev.description || "";
-                                  if (isSelected) {
-                                    currentDesc = currentDesc.replace(`[Tag: ${tag}]`, '').trim();
-                                  } else {
-                                    currentDesc = `${currentDesc} [Tag: ${tag}]`.trim();
-                                  }
-                                  return { ...prev, description: currentDesc };
-                                });
+                    <div className="bg-slate-50 border border-slate-100 rounded-xl p-3.5 space-y-3">
+                      <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">Categorías Adicionales / Secundarias (se marcan en la web)</span>
+                      
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+                        {/* Categoría Secundaria */}
+                        <div className="space-y-1.5">
+                          <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Categoría E-Commerce Secundaria</label>
+                          {ecomCategories.length > 0 ? (
+                            <select
+                              value={newArticle.categoria_id_sec || ""}
+                              onChange={(e) => {
+                                const selectedId = e.target.value;
+                                const catObj = ecomCategories.find(c => String(c.id) === String(selectedId));
+                                setNewArticle(prev => ({
+                                  ...prev,
+                                  categoria_id_sec: selectedId,
+                                  category_sec: catObj ? catObj.nombre : "",
+                                  subcategoria_id_sec: "",
+                                  subcategory_sec: ""
+                                }));
                               }}
-                              className={`px-3 py-1.5 text-xs font-bold rounded-xl border transition-all cursor-pointer ${
-                                isSelected
-                                  ? 'bg-indigo-600 text-white border-indigo-700 shadow-sm'
-                                  : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100'
-                              }`}
+                              className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs focus:ring-2 focus:ring-indigo-500 focus:outline-none font-bold text-slate-800"
                             >
-                              {tag}
-                            </button>
-                          );
-                        })}
+                              <option value="">-- Seleccionar Categoría --</option>
+                              {ecomCategories.map(cat => (
+                                <option key={`sec_cat_${cat.id}`} value={cat.id}>{cat.nombre}</option>
+                              ))}
+                            </select>
+                          ) : (
+                            <input
+                              type="text"
+                              value={newArticle.category_sec || ""}
+                              onChange={(e) => setNewArticle(prev => ({ ...prev, category_sec: e.target.value }))}
+                              placeholder="Ej: Cuadros, Iluminación, Decoración"
+                              className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs focus:ring-2 focus:ring-indigo-500 focus:outline-none font-bold text-slate-800"
+                            />
+                          )}
+                        </div>
+
+                        {/* Subcategoría Secundaria */}
+                        <div className="space-y-1.5">
+                          <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Subcategoría E-Commerce Secundaria</label>
+                          {ecomSubcategories.length > 0 ? (
+                            <select
+                              value={newArticle.subcategoria_id_sec || ""}
+                              onChange={(e) => {
+                                const selectedId = e.target.value;
+                                const subcatObj = ecomSubcategories.find(s => String(s.id) === String(selectedId));
+                                setNewArticle(prev => ({
+                                  ...prev,
+                                  subcategoria_id_sec: selectedId,
+                                  subcategory_sec: subcatObj ? subcatObj.nombre : ""
+                                }));
+                              }}
+                              className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs focus:ring-2 focus:ring-indigo-500 focus:outline-none font-bold text-slate-800"
+                            >
+                              <option value="">-- Seleccionar Subcategoría --</option>
+                              {ecomSubcategories
+                                .filter(sub => !newArticle.categoria_id_sec || String(sub.categoria_id) === String(newArticle.categoria_id_sec))
+                                .map(sub => (
+                                  <option key={`sec_subcat_${sub.id}`} value={sub.id}>{sub.nombre}</option>
+                                ))}
+                            </select>
+                          ) : (
+                            <input
+                              type="text"
+                              value={newArticle.subcategory_sec || ""}
+                              onChange={(e) => setNewArticle(prev => ({ ...prev, subcategory_sec: e.target.value }))}
+                              placeholder="Ej: Cuadros Trípticos, Veladores"
+                              className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs focus:ring-2 focus:ring-indigo-500 focus:outline-none font-bold text-slate-800"
+                            />
+                          )}
+                        </div>
                       </div>
                     </div>
 
-                    {/* Descripción Corta */}
+                    {/* Descripción E-Commerce */}
                     <div className="space-y-1.5">
-                      <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">Descripción E-Commerce</label>
-                      <input
-                        type="text"
+                      <div className="flex justify-between items-center">
+                        <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">Descripción E-Commerce</label>
+                        <span className="text-[9px] text-slate-400 font-medium font-mono">Formato libre • Saltos de línea permitidos</span>
+                      </div>
+                      <textarea
+                        rows={6}
                         value={newArticle.description}
                         onChange={(e) => setNewArticle(prev => ({ ...prev, description: e.target.value }))}
-                        placeholder="Ej: Set de 3 cuadros impresos en alta definición..."
-                        className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs focus:ring-2 focus:ring-indigo-500 focus:outline-none font-bold text-slate-800"
+                        placeholder="Escribe una descripción completa e ilustrativa para tus clientes. Ej:
+• Materiales de calidad premium y alta durabilidad.
+• Impresión HD con tintas ecológicas.
+• Listo para colgar y decorar tus ambientes.
+• Confección artesanal y cuidada."
+                        className="w-full bg-white border border-slate-200 rounded-xl px-3.5 py-3 text-xs focus:ring-2 focus:ring-indigo-500 focus:outline-none text-slate-700 font-medium leading-relaxed resize-y shadow-sm placeholder:text-slate-400"
                       />
                     </div>
                   </div>
