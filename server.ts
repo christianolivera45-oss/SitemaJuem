@@ -78,8 +78,10 @@ async function syncStockToEcommerce(id_code: string) {
     if (parentRow) {
       const parentSku = parentRow.id_code || parentRow.codigo || '';
       const parentName = parentRow.name || parentRow.nombre || '';
-      console.log(`[SYNC RUN RE-ROUTE] Re-routing sync for variant SKU "${cleanCode}" to parent product "${parentSku}" ("${parentName}")`);
-      return syncStockToEcommerce(parentSku);
+      if (parentSku && parentSku.toLowerCase().trim() !== cleanCode.toLowerCase()) {
+        console.log(`[SYNC RUN RE-ROUTE] Re-routing sync for variant SKU "${cleanCode}" to parent product "${parentSku}" ("${parentName}")`);
+        return syncStockToEcommerce(parentSku);
+      }
     }
 
     // 1. Fetch current stock levels AND complete product details from SQL or mock memory

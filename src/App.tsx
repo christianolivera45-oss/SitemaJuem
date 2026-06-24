@@ -11225,55 +11225,6 @@ export default function App() {
                               </div>
                             </div>
                           )}
-
-                          {/* List variants directly inside the inspection card if it has variants! */}
-                          {!isCombo && selectedArticle.variants && (() => {
-                            let parsedLocV = [];
-                            try {
-                              parsedLocV = typeof selectedArticle.variants === 'string' ? JSON.parse(selectedArticle.variants) : selectedArticle.variants;
-                            } catch (e) {}
-                            if (Array.isArray(parsedLocV) && parsedLocV.length > 0) {
-                              return (
-                                <div className="border-t border-slate-200/80 pt-3 mt-2 space-y-2">
-                                  <span className="text-[9.5px] font-extrabold uppercase tracking-wider text-slate-400 block pb-1">
-                                    Variantes del Artículo ({parsedLocV.length})
-                                  </span>
-                                  <div className="space-y-1.5 max-h-[160px] overflow-y-auto scrollbar-thin">
-                                    {parsedLocV.map((v: any, idx: number) => {
-                                      const foundV = catalog.find(x => x.codigo && x.codigo.toLowerCase() === (v.sku || '').toLowerCase());
-                                      const mvdStock = foundV ? foundV.mvd_stock : (v.stock || 0);
-                                      const pinStock = foundV ? foundV.pin_stock : 0;
-                                      return (
-                                        <div key={idx} className="flex items-center justify-between bg-white border border-slate-200/60 p-2 rounded-xl text-[11px] shadow-3xs hover:border-slate-300 transition-all">
-                                          <div className="flex flex-col text-left">
-                                            <span className="font-bold text-slate-850 text-xs">
-                                              Talle: <span className="text-indigo-600 font-extrabold">{v.size || v.attributes?.talle || 'U'}</span>
-                                              {v.color || v.attributes?.color ? ` / Color: ${v.color || v.attributes?.color}` : ''}
-                                            </span>
-                                            <span className="font-mono text-[9.5px] text-slate-400 hover:text-slate-600 select-all mt-0.5">
-                                              SKU: {v.sku}
-                                            </span>
-                                          </div>
-                                          <div className="flex items-center gap-2 font-mono font-bold text-[10px] shrink-0">
-                                            <span className="text-slate-500 bg-slate-100 py-0.5 px-1.5 rounded-lg text-[9.5px]" title="Montevideo">
-                                              Mvd: <strong className="text-slate-900">{mvdStock}</strong>
-                                            </span>
-                                            <span className="text-slate-500 bg-slate-100 py-0.5 px-1.5 rounded-lg text-[9.5px]" title="Pinar">
-                                              Pin: <strong className="text-slate-900">{pinStock}</strong>
-                                            </span>
-                                            <span className="text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-lg text-[9.5px]">
-                                              ${v.price || selectedArticle.precio_venta}
-                                            </span>
-                                          </div>
-                                        </div>
-                                      );
-                                    })}
-                                  </div>
-                                </div>
-                              );
-                            }
-                            return null;
-                          })()}
                         </div>
                       );
                     })()}
