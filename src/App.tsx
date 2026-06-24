@@ -2756,7 +2756,8 @@ export default function App() {
           inicial_mvd: 0,
           inicial_pin: 0,
           imagen_url: '',
-          comision_ml_raw: String(comboComisionML || '11')
+          comision_ml_raw: String(comboComisionML || '11'),
+          sync_to_web: true
         })
       });
 

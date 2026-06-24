@@ -98,6 +98,10 @@ async function syncStockToEcommerce(id_code: string) {
     let consultOnly = false;
     let categoria_id: string | null = null;
     let subcategoria_id: string | null = null;
+    let categoria_id_sec: string | null = null;
+    let subcategoria_id_sec: string | null = null;
+    let category_sec = "";
+    let subcategory_sec = "";
     let imagenes: string | null = null;
     let variants: string | null = null;
 
@@ -120,6 +124,10 @@ async function syncStockToEcommerce(id_code: string) {
         consultOnly = !!item.consult_only;
         categoria_id = item.categoria_id || null;
         subcategoria_id = item.subcategoria_id || null;
+        categoria_id_sec = item.categoria_id_sec || null;
+        subcategoria_id_sec = item.subcategoria_id_sec || null;
+        category_sec = item.category_sec || "";
+        subcategory_sec = item.subcategory_sec || "";
         imagenes = item.imagenes || null;
         variants = item.variants || null;
       } else {
@@ -144,6 +152,10 @@ async function syncStockToEcommerce(id_code: string) {
         consultOnly = !!(art as any).consult_only;
         categoria_id = (art as any).categoria_id || null;
         subcategoria_id = (art as any).subcategoria_id || null;
+        categoria_id_sec = (art as any).categoria_id_sec || null;
+        subcategoria_id_sec = (art as any).subcategoria_id_sec || null;
+        category_sec = (art as any).category_sec || "";
+        subcategory_sec = (art as any).subcategory_sec || "";
         imagenes = (art as any).imagenes || null;
         variants = (art as any).variants || null;
       }
@@ -191,6 +203,18 @@ async function syncStockToEcommerce(id_code: string) {
     }
     if (subcategoria_id) {
       bodyData.subcategoria_id = subcategoria_id;
+    }
+    if (categoria_id_sec) {
+      bodyData.categoria_id_sec = categoria_id_sec;
+    }
+    if (subcategoria_id_sec) {
+      bodyData.subcategoria_id_sec = subcategoria_id_sec;
+    }
+    if (category_sec) {
+      bodyData.category_sec = category_sec;
+    }
+    if (subcategory_sec) {
+      bodyData.subcategory_sec = subcategory_sec;
     }
     if (imageUrl) {
       bodyData.imageUrl = imageUrl;
@@ -272,25 +296,40 @@ async function syncStockToEcommerce(id_code: string) {
 
     console.log(`[SYNC UNIFICADO WEB] Sincronizando artículo ${cleanCode} ("${name}") con la tienda web: ${ecomUrl}. Stock: ${totalStock}, Precio Web/Face/Insta: $${price}`);
 
-    // Call fetch in background asynchronously (using a separate promise to catch errors)
+    // Call fetch in background asynchronously with a 120-second timeout
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 120000);
+
     fetch(ecomUrl, {
       method: "POST",
       headers: {
         "Content-Type": "application/json"
       },
-      body: JSON.stringify(bodyData)
+      body: JSON.stringify(bodyData),
+      signal: controller.signal
     })
     .then(async (res) => {
+      clearTimeout(timeoutId);
       if (!res.ok) {
-        const txt = await res.text();
-        console.error(`[SYNC UNIFICADO WEB ERROR] El servidor web devolvió código ${res.status}: ${txt}`);
+        let txt = await res.text();
+        if (txt.trim().toLowerCase().startsWith('<!doctype html') || txt.trim().toLowerCase().startsWith('<html')) {
+          txt = `[HTML Response Page (Length: ${txt.length} characters) - likely a Cloudflare timeout/error page]`;
+        } else if (txt.length > 300) {
+          txt = txt.substring(0, 300) + '... (truncated)';
+        }
+        console.warn(`[SYNC UNIFICADO WEB WARNING] El servidor web devolvió código ${res.status}: ${txt}`);
       } else {
         const data = await res.json();
         console.log(`[SYNC UNIFICADO WEB OK] Sincronización exitosa con la tienda web:`, data);
       }
     })
     .catch((err: any) => {
-      console.error("[SYNC UNIFICADO WEB ERROR CRÍTICO] Error al conectar con el servidor de la tienda:", err.message || err);
+      clearTimeout(timeoutId);
+      if (err.name === 'AbortError') {
+        console.warn("[SYNC UNIFICADO WEB WARNING] La solicitud de sincronización superó el tiempo límite de 120 segundos y fue cancelada.");
+      } else {
+        console.warn("[SYNC UNIFICADO WEB WARNING] Error al conectar con el servidor de la tienda:", err.message || err);
+      }
     });
 
   } catch (err: any) {
