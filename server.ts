@@ -233,7 +233,7 @@ async function syncStockToEcommerce(id_code: string) {
     if (variants) {
       try {
         const rawVariants = typeof variants === 'string' ? JSON.parse(variants) : variants;
-        if (Array.isArray(rawVariants)) {
+        if (Array.isArray(rawVariants) && rawVariants.length > 0) {
           bodyData.variants = await Promise.all(rawVariants.map(async (v: any) => {
             const size = v.size || v.attributes?.talle || v.attributes?.size || v.talle || "Único";
             const color = v.color || v.attributes?.color || "Base";
@@ -277,23 +277,33 @@ async function syncStockToEcommerce(id_code: string) {
             const priceDelta = varPrice > price ? (varPrice - price) : 0;
 
             return {
+              sku: v.sku || "",
               size,
               color,
               colorCode,
               stock: varStock,
               imageUrl: v.imageUrl || v.image || v.imagen_url || imageUrl || "",
-              sku: v.sku || "",
               price: varPrice,
               priceDelta: priceDelta
             };
           }));
+
+          // Unique lists for sizes and colors
+          bodyData.sizes = Array.from(new Set(bodyData.variants.map((v: any) => v.size).filter(Boolean)));
+          bodyData.colors = Array.from(new Set(bodyData.variants.map((v: any) => v.color).filter(Boolean)));
         } else {
+          bodyData.sizes = [];
+          bodyData.colors = [];
           bodyData.variants = [];
         }
       } catch (err) {
+        bodyData.sizes = [];
+        bodyData.colors = [];
         bodyData.variants = [];
       }
     } else {
+      bodyData.sizes = [];
+      bodyData.colors = [];
       bodyData.variants = [];
     }
     bodyData.featured = !!featured;
@@ -1854,6 +1864,8 @@ async function startServer() {
                   venta_price = EXCLUDED.venta_price,
                   precio_venta_ml = EXCLUDED.precio_venta_ml,
                   image_url = EXCLUDED.image_url,
+                  stock_montevideo = EXCLUDED.stock_montevideo,
+                  stock_pinamar = EXCLUDED.stock_pinamar,
                   comision_ml_raw = EXCLUDED.comision_ml_raw,
                   original_price = EXCLUDED.original_price,
                   description = EXCLUDED.description,
@@ -2286,23 +2298,11 @@ async function startServer() {
                 variantName += ` - ${parts.join(' / ')}`;
               }
               
-              const variantVentaML = Number(variant.price || pVenta);
-              const variantVentaGeneral = variantVentaML - commissionFlatAmount;
+              const variantVentaGeneral = Number(variant.price || pVenta);
+              const variantVentaML = variantVentaGeneral + commissionFlatAmount;
               const variantImgUrl = String(variant.imagen_url || variant.image_url || variant.imageUrl || variant.image || variant.imagen || imgUrl || '').trim();
-              const variantStock = Number(variant.stock || 0);
-
-              // Check if the variant already exists to preserve its individual stock or update the primary warehouse
-              const existingVarRows = await sql`SELECT stock_montevideo, stock_pinamar FROM stock WHERE id_code = ${variantSku}`;
-              let stockPin = 0;
-              let stockMvd = 0;
-              if (existingVarRows.length > 0) {
-                stockMvd = Number(existingVarRows[0].stock_montevideo || 0);
-                stockPin = Number(existingVarRows[0].stock_pinamar || 0);
-              } else {
-                const isMvd = req.body.creador_sucursal === 'Montevideo' || req.body.creador_sucursal === 'Mvd' || true;
-                stockMvd = isMvd ? variantStock : 0;
-                stockPin = isMvd ? 0 : variantStock;
-              }
+              const stockMvd = Number(variant.stock_montevideo !== undefined ? variant.stock_montevideo : (variant.stock || 0));
+              const stockPin = Number(variant.stock_pinamar !== undefined ? variant.stock_pinamar : 0);
 
               await sql`
                 INSERT INTO stock (
@@ -2326,6 +2326,8 @@ async function startServer() {
                     venta_price = EXCLUDED.venta_price,
                     precio_venta_ml = EXCLUDED.precio_venta_ml,
                     image_url = EXCLUDED.image_url,
+                    stock_montevideo = EXCLUDED.stock_montevideo,
+                    stock_pinamar = EXCLUDED.stock_pinamar,
                     comision_ml_raw = EXCLUDED.comision_ml_raw,
                     original_price = EXCLUDED.original_price,
                     description = EXCLUDED.description,
@@ -2427,10 +2429,11 @@ async function startServer() {
                 variantName += ` - ${parts.join(' / ')}`;
               }
               
-              const variantVentaML = Number(variant.price || pVenta);
-              const variantVentaGeneral = variantVentaML - commissionFlatAmount;
+              const variantVentaGeneral = Number(variant.price || pVenta);
+              const variantVentaML = variantVentaGeneral + commissionFlatAmount;
               const variantImgUrl = String(variant.imagen_url || variant.image_url || variant.imageUrl || variant.image || variant.imagen || imgUrl || '').trim();
-              const variantStock = Number(variant.stock || 0);
+              const stockMvd = Number(variant.stock_montevideo !== undefined ? variant.stock_montevideo : (variant.stock || 0));
+              const stockPin = Number(variant.stock_pinamar !== undefined ? variant.stock_pinamar : 0);
 
               const matchVarItem: any = mock_articulos.find(a => a.codigo && a.codigo.toLowerCase() === variantSku.toLowerCase());
               if (matchVarItem) {
@@ -2451,6 +2454,15 @@ async function startServer() {
                 matchVarItem.consult_only = !!consult_only;
                 matchVarItem.categoria_id = categoria_id || null;
                 matchVarItem.subcategoria_id = subcategoria_id || null;
+
+                // Update mock stock for existing variant
+                let mvdVar = mock_stock.find(s => s.articulo_id === matchVarItem.id && s.sucursal === "Mvd");
+                if (mvdVar) mvdVar.cantidad = stockMvd;
+                else mock_stock.push({ id: mock_stock.length + 1, articulo_id: matchVarItem.id, sucursal: "Mvd", cantidad: stockMvd });
+
+                let pinVar = mock_stock.find(s => s.articulo_id === matchVarItem.id && s.sucursal === "Pin");
+                if (pinVar) pinVar.cantidad = stockPin;
+                else mock_stock.push({ id: mock_stock.length + 1, articulo_id: matchVarItem.id, sucursal: "Pin", cantidad: stockPin });
               } else {
                 const vNextId = mock_articulos.length > 0 ? Math.max(...mock_articulos.map(a => a.id)) + 1 : 1;
                 const vItem = {
@@ -2479,9 +2491,8 @@ async function startServer() {
                 };
                 mock_articulos.push(vItem);
 
-                const isMvd = req.body.creador_sucursal === 'Montevideo' || req.body.creador_sucursal === 'Mvd' || true;
-                mock_stock.push({ id: mock_stock.length + 1, articulo_id: vNextId, sucursal: "Mvd", cantidad: isMvd ? variantStock : 0 });
-                mock_stock.push({ id: mock_stock.length + 1, articulo_id: vNextId, sucursal: "Pin", cantidad: isMvd ? 0 : variantStock });
+                mock_stock.push({ id: mock_stock.length + 1, articulo_id: vNextId, sucursal: "Mvd", cantidad: stockMvd });
+                mock_stock.push({ id: mock_stock.length + 1, articulo_id: vNextId, sucursal: "Pin", cantidad: stockPin });
               }
             }
           }
