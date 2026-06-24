@@ -251,9 +251,11 @@ async function syncStockToEcommerce(id_code: string) {
               else colorCode = "#cbd5e1"; // fallback color
             }
 
-            // Retrieve live current stock of this variant from database if it has its own SKU row
-            let varStock = Number(v.stock !== undefined ? v.stock : totalStock);
-            if (v.sku) {
+            // Retrieve live current stock of this variant from database if it has its own SKU row.
+            // If the variant SKU is identical to the parent SKU, use the variant's locally defined stock
+            // to avoid pulling the parent item's total combined stock sum.
+            let varStock = Number(v.stock !== undefined ? v.stock : (v.stock_montevideo !== undefined ? (Number(v.stock_montevideo) + Number(v.stock_pinamar || 0)) : totalStock));
+            if (v.sku && v.sku.toLowerCase() !== cleanCode.toLowerCase()) {
               if (sql) {
                 try {
                   const varRows = await sql`SELECT stock_montevideo, stock_pinamar FROM stock WHERE LOWER(id_code) = LOWER(${v.sku})`;
@@ -271,6 +273,9 @@ async function syncStockToEcommerce(id_code: string) {
               }
             }
 
+            const varPrice = Number(v.price !== undefined ? v.price : price);
+            const priceDelta = varPrice > price ? (varPrice - price) : 0;
+
             return {
               size,
               color,
@@ -278,7 +283,8 @@ async function syncStockToEcommerce(id_code: string) {
               stock: varStock,
               imageUrl: v.imageUrl || v.image || v.imagen_url || imageUrl || "",
               sku: v.sku || "",
-              price: Number(v.price !== undefined ? v.price : price)
+              price: varPrice,
+              priceDelta: priceDelta
             };
           }));
         } else {
@@ -1799,6 +1805,9 @@ async function startServer() {
           for (const variant of parsedVariants) {
             const variantSku = variant.sku || '';
             if (!variantSku) continue;
+            // Skip saving the variant as a separate row if it shares the exact SKU of the parent product,
+            // to prevent overwriting the parent product's publication metadata and variants list.
+            if (variantSku.toLowerCase() === codigo.toLowerCase()) continue;
 
             // Extract attributes robustly
             const attr = variant.attributes || variant.Attributes || {};
@@ -2011,6 +2020,9 @@ async function startServer() {
           for (const variant of parsedVariants) {
             const variantSku = variant.sku || '';
             if (!variantSku) continue;
+            // Skip saving the variant as a separate item if it shares the exact SKU of the parent product,
+            // to prevent overwriting the parent product's publication metadata and variants list.
+            if (variantSku.toLowerCase() === codigo.toLowerCase()) continue;
 
             // Extract attributes robustly
             const attr = variant.attributes || variant.Attributes || {};
@@ -2257,6 +2269,9 @@ async function startServer() {
             for (const variant of parsedVariants) {
               const variantSku = variant.sku || '';
               if (!variantSku) continue;
+              // Skip saving the variant as a separate row if it shares the exact SKU of the parent product,
+              // to prevent overwriting the parent product's publication metadata and variants list.
+              if (variantSku.toLowerCase() === code.toLowerCase()) continue;
 
               // Extract attributes robustly
               const attr = variant.attributes || variant.Attributes || {};
@@ -2395,6 +2410,9 @@ async function startServer() {
             for (const variant of parsedVariants) {
               const variantSku = variant.sku || '';
               if (!variantSku) continue;
+              // Skip saving the variant as a separate item if it shares the exact SKU of the parent product,
+              // to prevent overwriting the parent product's publication metadata and variants list.
+              if (variantSku.toLowerCase() === item.codigo.toLowerCase()) continue;
 
               // Extract attributes robustly
               const attr = variant.attributes || variant.Attributes || {};
