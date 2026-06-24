@@ -114,6 +114,7 @@ interface Sale {
   total_juem?: number;
   estado?: string;
   aprobado?: string;
+  grupo_id?: string | null;
 }
 
 interface Gasto {
@@ -716,17 +717,24 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState('');
 
   // Control de ordenamiento para el catálogo de artículos
-  const [sortField, setSortField] = useState<'nombre' | 'costo' | 'precio_venta' | 'precio_venta_ml' | 'comision_ml' | 'mvd_stock' | 'pin_stock' | 'codigo' | null>('nombre');
-  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
+  const [sortField, setSortField] = useState<'nombre' | 'costo' | 'precio_venta' | 'precio_venta_ml' | 'comision_ml' | 'mvd_stock' | 'pin_stock' | 'codigo' | 'created_at' | null>('created_at');
+  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc');
 
-  const toggleSort = (field: 'nombre' | 'costo' | 'precio_venta' | 'precio_venta_ml' | 'comision_ml' | 'mvd_stock' | 'pin_stock' | 'codigo') => {
+  const toggleSort = (field: 'nombre' | 'costo' | 'precio_venta' | 'precio_venta_ml' | 'comision_ml' | 'mvd_stock' | 'pin_stock' | 'codigo' | 'created_at') => {
     if (sortField === field) {
       setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
     } else {
       setSortField(field);
-      setSortDirection('asc');
+      setSortDirection(field === 'created_at' ? 'desc' : 'asc');
     }
     setCurrentPage(1);
+  };
+
+  const getLocalDateString = () => {
+    const date = new Date();
+    const offset = date.getTimezoneOffset();
+    const localDate = new Date(date.getTime() - (offset * 60 * 1000));
+    return localDate.toISOString().split('T')[0];
   };
 
   // Form states
@@ -735,7 +743,7 @@ export default function App() {
     articulo_id: '',
     cantidad: 1,
     sucursal: 'Pin' as 'Mvd' | 'Pin',
-    fecha: '',
+    fecha: getLocalDateString(),
     canal: 'WhatsApp',
     costo_envio: '',
     precio_venta_override: '',
@@ -811,24 +819,37 @@ export default function App() {
   const [isDeletingSaleSubmitting, setIsDeletingSaleSubmitting] = useState(false);
   const [deleteSaleError, setDeleteSaleError] = useState('');
 
-  const confirmDeleteSale = async (saleId: number) => {
+  const confirmDeleteSale = async (sale: any) => {
     setIsDeletingSaleSubmitting(true);
     setDeleteSaleError('');
     try {
-      const res = await fetch(`/api/ventas/${saleId}`, {
-        method: 'DELETE'
-      });
-
-      if (res.ok) {
-        setSaleToDelete(null);
-        await refreshSystemData();
+      if (sale.items && sale.items.length > 0) {
+        // Grouped deletion - delete each item sequentially
+        for (const item of sale.items) {
+          const res = await fetch(`/api/ventas/${item.id}`, {
+            method: 'DELETE'
+          });
+          if (!res.ok) {
+            const errorData = await res.json();
+            throw new Error(errorData.error || `Error al eliminar el artículo ${item.articulo_nombre} de la venta.`);
+          }
+        }
       } else {
-        const errorData = await res.json();
-        setDeleteSaleError(errorData.error || 'Error al eliminar la venta.');
+        // Single item deletion
+        const res = await fetch(`/api/ventas/${sale.id}`, {
+          method: 'DELETE'
+        });
+        if (!res.ok) {
+          const errorData = await res.json();
+          throw new Error(errorData.error || 'Error al eliminar la venta.');
+        }
       }
-    } catch (err) {
+
+      setSaleToDelete(null);
+      await refreshSystemData();
+    } catch (err: any) {
       console.error(err);
-      setDeleteSaleError('Error de conexión al eliminar la venta.');
+      setDeleteSaleError(err.message || 'Error de conexión al eliminar la venta.');
     } finally {
       setIsDeletingSaleSubmitting(false);
     }
@@ -1726,7 +1747,7 @@ export default function App() {
         body: JSON.stringify({
           clientName: dispatchSale.cliente || 'Christian Olivera',
           sucursal: dispatchSale.sucursal,
-          fecha: new Date().toISOString(),
+          fecha: dispatchSale.fecha ? new Date(dispatchSale.fecha).toISOString() : new Date().toISOString(),
           canal: dispatchSale.canal,
           costo_envio: dispatchSale.costo_envio ? Number(dispatchSale.costo_envio) : 0,
           aprobado: dispatchSale.aprobado,
@@ -1753,7 +1774,7 @@ export default function App() {
         articulo_id: '', 
         cantidad: 1, 
         sucursal: 'Pin',
-        fecha: '',
+        fecha: getLocalDateString(),
         canal: 'WhatsApp',
         costo_envio: '',
         precio_venta_override: '',
@@ -2872,6 +2893,9 @@ export default function App() {
       } else if (sortField === 'pin_stock') {
         valA = Number(a.pin_stock || 0);
         valB = Number(b.pin_stock || 0);
+      } else if (sortField === 'created_at') {
+        valA = a.created_at ? new Date(a.created_at).getTime() : a.id;
+        valB = b.created_at ? new Date(b.created_at).getTime() : b.id;
       }
 
       if (valA < valB) return sortDirection === 'asc' ? -1 : 1;
@@ -3278,7 +3302,7 @@ export default function App() {
               {/* TABLE LIST: REAL-TIME INVENTORY CONTROL */}
               <div className="bg-white rounded-2xl border border-slate-200/85 shadow-sm overflow-hidden">
                 <div className="p-5 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-slate-50/50">
-                  <div className="flex items-center gap-2.5">
+                  <div className="flex items-center gap-2.5 flex-wrap">
                     <div className="w-2.5 h-2.5 rounded-full bg-indigo-500"></div>
                     <span className="text-xs font-extrabold uppercase tracking-wider text-slate-800">Inventario Central Resumido</span>
                     <span className="text-xs font-mono text-slate-500 font-bold bg-slate-200/50 px-2.5 py-0.5 rounded-full">
@@ -4781,19 +4805,74 @@ export default function App() {
 
         {/* 4. VIEW: VENTAS & PEDIDOS CASHIER CHECKOUT */}
         {activeTab === 'ventas' && (() => {
-          const filteredSales = sales.filter(s => {
-            const matchesSearch = matchAdvancedSearch([s.cliente, s.articulo_nombre, s.articulo_codigo], salesSearch);
+          // Helper to group sales dynamically by grupo_id (or pseudo client+date key for legacy sales)
+          const groupSalesList = (salesList: Sale[]) => {
+            const groups: Record<string, any> = {};
+
+            salesList.forEach(s => {
+              const dateObj = new Date(s.fecha);
+              // Group within 1-minute window
+              const roundedMinutes = Math.floor(dateObj.getMinutes() / 1) * 1;
+              const dateStrKey = `${dateObj.getFullYear()}-${dateObj.getMonth()}-${dateObj.getDate()} ${dateObj.getHours()}:${roundedMinutes}`;
+              
+              const key = s.grupo_id || `legacy_${(s.cliente || '').trim()}_${s.sucursal}_${s.canal || 'Directa'}_${dateStrKey}`;
+
+              if (!groups[key]) {
+                groups[key] = {
+                  id: key,
+                  grupo_id: s.grupo_id || null,
+                  fecha: s.fecha,
+                  cliente: s.cliente || "Cliente Desconocido",
+                  canal: s.canal || 'Venta Directa',
+                  sucursal: s.sucursal,
+                  costo_envio: s.costo_envio || 0,
+                  total: 0,
+                  ganancia_neta: 0,
+                  total_franquicia: 0,
+                  total_juem: 0,
+                  aprobado: s.aprobado || 'Aprobado',
+                  items: []
+                };
+              }
+
+              groups[key].items.push(s);
+              groups[key].total += Number(s.total || 0);
+              groups[key].ganancia_neta += Number(s.ganancia_neta || 0);
+              groups[key].total_franquicia += Number(s.total_franquicia || 0);
+              groups[key].total_juem += Number(s.total_juem || 0);
+            });
+
+            return Object.values(groups).sort((a, b) => {
+              return new Date(b.fecha).getTime() - new Date(a.fecha).getTime();
+            });
+          };
+
+          const allGroupedSales = groupSalesList(sales);
+
+          const filteredGroupedSales = allGroupedSales.filter(g => {
+            const matchesSearch = matchAdvancedSearch(
+              [
+                g.cliente,
+                g.canal,
+                ...g.items.map(item => item.articulo_nombre),
+                ...g.items.map(item => item.articulo_codigo)
+              ],
+              salesSearch
+            );
+
             const matchesBranch = (sessionUser?.sucursal === 'Montevideo')
-              ? (s.sucursal === 'Mvd' || s.sucursal === 'Montevideo')
-              : (salesFilterSucursal === 'ALL' || s.sucursal === salesFilterSucursal);
-            const matchesChannel = salesFilterCanal === 'ALL' || s.canal === salesFilterCanal;
+              ? (g.sucursal === 'Mvd' || g.sucursal === 'Montevideo')
+              : (salesFilterSucursal === 'ALL' || g.sucursal === salesFilterSucursal);
+
+            const matchesChannel = salesFilterCanal === 'ALL' || g.canal === salesFilterCanal;
+
             return matchesSearch && matchesBranch && matchesChannel;
           });
 
-          const totalInvoiced = filteredSales.reduce((sum, s) => sum + (s.total || 0), 0);
-          const totalNetGain = filteredSales.reduce((sum, s) => sum + (s.ganancia_neta || 0), 0);
-          const totalFran = filteredSales.reduce((sum, s) => sum + (s.total_franquicia || 0), 0);
-          const totalJuem = filteredSales.reduce((sum, s) => sum + (s.total_juem || 0), 0);
+          const totalInvoiced = filteredGroupedSales.reduce((sum, g) => sum + g.total, 0);
+          const totalNetGain = filteredGroupedSales.reduce((sum, g) => sum + g.ganancia_neta, 0);
+          const totalFran = filteredGroupedSales.reduce((sum, g) => sum + g.total_franquicia, 0);
+          const totalJuem = filteredGroupedSales.reduce((sum, g) => sum + g.total_juem, 0);
 
           return (
             <div className="space-y-6">
@@ -4801,7 +4880,7 @@ export default function App() {
               <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
                 <div className="bg-white p-4 rounded-xl border border-slate-250/60 shadow-sm">
                   <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider block">Registros</span>
-                  <span className="text-lg font-mono font-bold text-slate-800">{filteredSales.length} ventas</span>
+                  <span className="text-lg font-mono font-bold text-slate-800">{filteredGroupedSales.length} ventas</span>
                 </div>
                 <div className="bg-white p-4 rounded-xl border border-slate-250/60 shadow-sm">
                   <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider block">Total Facturado</span>
@@ -4956,30 +5035,72 @@ export default function App() {
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-100 font-medium text-[11px]">
-                        {filteredSales.length === 0 ? (
+                        {filteredGroupedSales.length === 0 ? (
                           <tr>
                             <td colSpan={12} className="text-center py-8 text-slate-400 font-mono">
                               No hay registros que coincidan con la búsqueda.
                             </td>
                           </tr>
                         ) : (
-                          filteredSales.map(s => {
-                            const isML = s.canal?.toLowerCase() === 'mercado libre';
-                            const isWhatsApp = s.canal?.toLowerCase() === 'whatsapp';
+                          filteredGroupedSales.map(g => {
+                            const isML = g.canal?.toLowerCase() === 'mercado libre';
+                            const isWhatsApp = g.canal?.toLowerCase() === 'whatsapp';
+                            const totalQty = g.items.reduce((sum: number, item: any) => sum + Number(item.cantidad || 0), 0);
                             return (
-                              <tr key={s.id} className="hover:bg-slate-50/40 transition-colors">
+                              <tr key={g.id} className="hover:bg-slate-50/40 transition-colors">
                                 <td className="py-2.5 px-3 text-slate-400 font-mono leading-tight">
-                                  {new Date(s.fecha).toLocaleString('es-UY', { year: '2-digit', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}
+                                  {new Date(g.fecha).toLocaleString('es-UY', { year: '2-digit', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}
                                 </td>
                                 <td className="py-2.5 px-3 font-semibold text-slate-800">
-                                  {s.cliente}
+                                  {g.cliente}
                                 </td>
                                 <td className="py-2.5 px-3">
-                                  <div className={`font-semibold ${catalog.find(x => x.id === s.articulo_id)?.tipo === 'compuesto' ? 'text-blue-600 font-bold' : 'text-slate-900'}`}>{s.articulo_nombre}</div>
-                                  <div className="text-[10px] text-slate-400 font-mono">{s.articulo_codigo}</div>
+                                  <div className="space-y-1.5 py-1">
+                                    {g.items.map((item: any) => {
+                                      const isCompuesto = catalog.find(x => x.id === item.articulo_id)?.tipo === 'compuesto';
+                                      return (
+                                        <div key={item.id} className="flex items-center justify-between gap-4 bg-slate-50/50 p-1.5 px-2 rounded-lg border border-slate-100 hover:border-slate-200 transition-colors">
+                                          <div>
+                                            <div className={`font-semibold ${isCompuesto ? 'text-blue-600 font-bold' : 'text-slate-850'}`}>
+                                              {item.articulo_nombre}
+                                            </div>
+                                            <div className="text-[10px] text-slate-400 font-mono">
+                                              {item.articulo_codigo} &bull; <span className="font-semibold text-slate-500">${Number(item.total / item.cantidad).toLocaleString('es-UY')} c/u</span>
+                                            </div>
+                                          </div>
+                                          <div className="flex items-center gap-1.5 text-right shrink-0">
+                                            <span className="text-[10px] bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded font-mono font-bold">
+                                              x{item.cantidad}
+                                            </span>
+                                            <div className="flex items-center gap-1">
+                                              <button
+                                                onClick={() => handleStartEditSale(item)}
+                                                title="Editar artículo de la venta"
+                                                className="p-1 text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 rounded transition-colors"
+                                              >
+                                                <Pencil className="w-3 h-3" />
+                                              </button>
+                                              <button
+                                                onClick={() => {
+                                                  setSaleToDelete({
+                                                    ...item,
+                                                    items: [item] // set as single item for deletion
+                                                  } as any);
+                                                }}
+                                                title="Eliminar artículo de la venta"
+                                                className="p-1 text-slate-500 hover:text-red-600 hover:bg-red-50 rounded transition-colors"
+                                              >
+                                                <Trash2 className="w-3 h-3" />
+                                              </button>
+                                            </div>
+                                          </div>
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
                                 </td>
                                 <td className="py-2.5 px-3 text-center font-mono font-bold text-slate-700">
-                                  {s.cantidad}
+                                  {totalQty}
                                 </td>
                                 <td className="py-2.5 px-3 text-center space-y-0.5">
                                   <span className={`inline-block px-1.5 py-0.5 rounded text-[8px] font-extrabold ${
@@ -4987,50 +5108,50 @@ export default function App() {
                                     isWhatsApp ? 'bg-emerald-50 text-emerald-800 border border-emerald-200' :
                                     'bg-slate-50 text-slate-600 border border-slate-200'
                                   }`}>
-                                    {s.canal || "Venta Directa"}
+                                    {g.canal || "Venta Directa"}
                                   </span>
                                   <br/>
-                                  <span className={`inline-block px-1.5 py-0.5 rounded text-[8px] font-extrabold ${s.sucursal === 'Pin' ? 'bg-indigo-50 text-indigo-700' : 'bg-slate-100 text-slate-700'}`}>
-                                    {s.sucursal === 'Pin' ? 'Pinamar' : 'Montevideo'}
+                                  <span className={`inline-block px-1.5 py-0.5 rounded text-[8px] font-extrabold ${g.sucursal === 'Pin' ? 'bg-indigo-50 text-indigo-700' : 'bg-slate-100 text-slate-700'}`}>
+                                    {g.sucursal === 'Pin' ? 'Pinamar' : 'Montevideo'}
                                   </span>
                                 </td>
-                                <td className="py-2.5 px-3 text-right font-mono font-bold text-slate-900">
-                                  ${(s.total || 0).toLocaleString('es-UY', { minimumFractionDigits: 1 })}
+                                <td className="py-2.5 px-3 text-right font-mono font-bold text-slate-900 text-xs">
+                                  ${g.total.toLocaleString('es-UY', { minimumFractionDigits: 1 })}
                                 </td>
                                 <td className="py-2.5 px-3 text-right font-mono text-slate-400">
-                                  ${(s.costo_envio || 0) > 0 ? (s.costo_envio || 0).toLocaleString('es-UY', { minimumFractionDigits: 1 }) : '0'}
+                                  ${g.costo_envio > 0 ? g.costo_envio.toLocaleString('es-UY', { minimumFractionDigits: 1 }) : '0'}
                                 </td>
                                 <td className="py-2.5 px-3 text-right font-mono font-bold text-emerald-600 bg-emerald-50/20 text-xs">
-                                  ${(s.ganancia_neta || 0).toLocaleString('es-UY', { minimumFractionDigits: 1 })}
+                                  ${g.ganancia_neta.toLocaleString('es-UY', { minimumFractionDigits: 1 })}
                                 </td>
                                 <td className="py-2.5 px-3 text-right font-mono text-indigo-600 font-semibold">
-                                  ${(s.total_franquicia || 0).toLocaleString('es-UY', { minimumFractionDigits: 1 })}
+                                  ${g.total_franquicia.toLocaleString('es-UY', { minimumFractionDigits: 1 })}
                                 </td>
                                 <td className="py-2.5 px-3 text-right font-mono text-purple-600 font-semibold">
-                                  ${(s.total_juem || 0).toLocaleString('es-UY', { minimumFractionDigits: 1 })}
+                                  ${g.total_juem.toLocaleString('es-UY', { minimumFractionDigits: 1 })}
                                 </td>
                                 <td className="py-2.5 px-3 text-center">
-                                  <span className={`inline-block px-1.5 py-0.5 rounded text-[8px] font-extrabold ${s.aprobado === 'Aprobado' ? 'bg-emerald-500 text-white' : 'bg-amber-400 text-slate-950'}`}>
-                                    {s.aprobado || 'Aprobado'}
+                                  <span className={`inline-block px-1.5 py-0.5 rounded text-[8px] font-extrabold ${g.aprobado === 'Aprobado' ? 'bg-emerald-500 text-white' : 'bg-amber-400 text-slate-950'}`}>
+                                    {g.aprobado || 'Aprobado'}
                                   </span>
                                 </td>
                                 <td className="py-2.5 px-3 text-center">
-                                  <div className="flex items-center justify-center gap-1.5">
+                                  <div className="flex flex-col items-center justify-center gap-1">
                                     <button
-                                      onClick={() => handleStartEditSale(s)}
-                                      title="Modificar venta"
-                                      className="p-1 px-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded transition-colors flex items-center justify-center gap-1 font-semibold"
+                                      onClick={() => {
+                                        setSaleToDelete({
+                                          id: 0,
+                                          cliente: g.cliente,
+                                          items: g.items,
+                                          sucursal: g.sucursal,
+                                          total: g.total
+                                        } as any);
+                                      }}
+                                      title="Eliminar venta completa"
+                                      className="p-1 px-2 bg-red-50 hover:bg-red-100 text-red-650 rounded transition-colors flex items-center justify-center gap-1 font-bold text-[9px] uppercase tracking-wider"
                                     >
-                                      <Pencil className="w-3 h-3" />
-                                      <span>Editar</span>
-                                    </button>
-                                    <button
-                                      onClick={() => setSaleToDelete(s)}
-                                      title="Eliminar venta"
-                                      className="p-1 px-1.5 bg-red-50 hover:bg-red-100 text-red-650 rounded transition-colors flex items-center justify-center gap-1 font-semibold"
-                                    >
-                                      <Trash2 className="w-3 h-3" />
-                                      <span>Borrar</span>
+                                      <Trash2 className="w-2.5 h-2.5" />
+                                      <span>Borrar Venta</span>
                                     </button>
                                   </div>
                                 </td>
@@ -10258,11 +10379,13 @@ export default function App() {
 
                   <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-1">
-                      <label className="text-slate-500 uppercase tracking-wider text-[9px]">Fecha y Hora</label>
-                      <div className="w-full bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-1.5 text-slate-550 font-bold text-xs flex items-center gap-1.5 cursor-not-allowed">
-                        <span className="inline-block w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-                        <span>Automática (Ahora)</span>
-                      </div>
+                      <label className="text-slate-500 uppercase tracking-wider text-[9px]">Fecha de Venta</label>
+                      <input
+                        type="date"
+                        value={dispatchSale.fecha}
+                        onChange={(e) => setDispatchSale(prev => ({ ...prev, fecha: e.target.value }))}
+                        className="w-full bg-white border border-slate-200 rounded-xl px-2.5 py-1.5 text-slate-950 font-semibold focus:outline-none focus:ring-1 focus:ring-indigo-500 text-xs"
+                      />
                     </div>
 
                     <div className="space-y-1">
@@ -11752,7 +11875,9 @@ export default function App() {
                 <h2 className="text-sm font-bold uppercase tracking-wider text-slate-900">
                   ¿Confirmar eliminación del pedido?
                 </h2>
-                <p className="text-[10px] text-slate-500 font-mono">Venta #{saleToDelete.id}</p>
+                <p className="text-[10px] text-slate-500 font-mono">
+                  {saleToDelete.items && saleToDelete.items.length > 0 ? "Venta Grupal" : `Venta #${saleToDelete.id}`}
+                </p>
               </div>
             </div>
 
@@ -11775,9 +11900,19 @@ export default function App() {
                 <p className="text-[11px] leading-relaxed">
                   Al eliminar esta venta, se reincorporará automáticamente de forma inmediata el stock correspondiente:
                 </p>
-                <div className="font-mono text-xs font-bold bg-white/80 p-2.5 rounded-lg border border-amber-200 flex flex-col gap-1 text-slate-800">
-                  <div>• Producto: <span className="text-indigo-700 font-bold">{saleToDelete.articulo_nombre}</span></div>
-                  <div>• Cantidad: <span className="text-amber-700 font-bold">{saleToDelete.cantidad} unidad(es)</span></div>
+                <div className="font-mono text-xs font-bold bg-white/80 p-2.5 rounded-lg border border-amber-200 flex flex-col gap-1.5 text-slate-800">
+                  {saleToDelete.items && saleToDelete.items.length > 0 ? (
+                    saleToDelete.items.map((item: any, idx: number) => (
+                      <div key={idx}>
+                        • <span className="text-indigo-700 font-bold">{item.articulo_nombre}</span> x <span className="text-amber-700 font-bold">{item.cantidad}</span> ({item.articulo_codigo})
+                      </div>
+                    ))
+                  ) : (
+                    <>
+                      <div>• Producto: <span className="text-indigo-700 font-bold">{saleToDelete.articulo_nombre}</span></div>
+                      <div>• Cantidad: <span className="text-amber-700 font-bold">{saleToDelete.cantidad} unidad(es)</span></div>
+                    </>
+                  )}
                   <div>• Sucursal: <span className="text-slate-900 font-bold">{saleToDelete.sucursal === 'Pin' ? 'Pinamar' : 'Montevideo'}</span></div>
                 </div>
               </div>
@@ -11799,7 +11934,7 @@ export default function App() {
               <button
                 type="button"
                 disabled={isDeletingSaleSubmitting}
-                onClick={() => confirmDeleteSale(saleToDelete.id)}
+                onClick={() => confirmDeleteSale(saleToDelete)}
                 className="px-5 py-2 bg-red-600 hover:bg-red-700 text-white font-bold text-xs rounded-xl cursor-pointer disabled:opacity-50 transition-colors shadow-sm"
               >
                 {isDeletingSaleSubmitting ? "Eliminando..." : "Sí, Eliminar Pedido"}
@@ -12105,7 +12240,8 @@ export default function App() {
                   e.preventDefault();
                 }} 
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
+                  const target = e.target as HTMLElement;
+                  if (e.key === 'Enter' && target.tagName !== 'TEXTAREA') {
                     e.preventDefault();
                   }
                 }}
@@ -12547,7 +12683,18 @@ export default function App() {
                             <h4 className="text-xs font-bold text-slate-805">Galería Fotográfica del Producto (Cloudinary)</h4>
                             <p className="text-[10px] text-slate-400">Las fotos se guardan en Cloudinary. Arrastra las imágenes para reordenar la galería.</p>
                           </div>
-                          <span className="text-[9px] font-bold bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded border border-emerald-200">CLOUDINARY ACTIVO</span>
+                          <div className="flex items-center gap-2">
+                            <a
+                              href="https://console.cloudinary.com"
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-[9.5px] font-bold bg-indigo-50 text-indigo-700 hover:bg-indigo-100 transition-all px-2.5 py-1 rounded border border-indigo-200 flex items-center gap-1.5 shadow-3xs"
+                              title="Acceder a tu biblioteca de imágenes en la nube de Cloudinary"
+                            >
+                              📂 Carpeta Cloudinary (Nube) ↗
+                            </a>
+                            <span className="text-[9px] font-bold bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded border border-emerald-200">CLOUDINARY ACTIVO</span>
+                          </div>
                         </div>
 
                         {/* Agregar URL de Fotos */}
@@ -12621,6 +12768,18 @@ export default function App() {
                               <span className="text-[10px] text-slate-400 block mt-0.5">
                                 Subida directa a Cloudinary con ordenamiento interactivo
                               </span>
+                              <div className="pt-2">
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    window.open("https://console.cloudinary.com", "_blank");
+                                  }}
+                                  className="inline-flex items-center gap-1.5 px-3 py-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-lg text-[10px] font-bold border border-indigo-200 transition-colors pointer-events-auto shadow-3xs"
+                                >
+                                  📂 Abrir Carpeta Cloudinary (Nube) ↗
+                                </button>
+                              </div>
                             </div>
                           )}
                         </div>

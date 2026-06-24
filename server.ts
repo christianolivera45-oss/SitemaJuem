@@ -176,7 +176,7 @@ async function syncStockToEcommerce(id_code: string) {
     const bodyData: any = {
       secretKey: secretKey,
       codigo: cleanCode,
-      name: name,
+      name: name.split(' - ')[0].trim(),
       price: price,
       stock: totalStock
     };
@@ -628,8 +628,14 @@ async function initDb() {
         category_sec TEXT DEFAULT '',
         subcategory_sec TEXT DEFAULT '',
         imagenes TEXT DEFAULT NULL,
-        variants TEXT DEFAULT NULL
+        variants TEXT DEFAULT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
+    `;
+
+    // Ensure the created_at column exists in case the table was created previously without it
+    await sql`
+      ALTER TABLE stock ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
     `;
 
     // 2. Combos definition
@@ -667,8 +673,14 @@ async function initDb() {
         estado TEXT DEFAULT 'Procesado',
         codigo_art VARCHAR(50),
         direccion TEXT,
-        aprobado TEXT DEFAULT 'Aprobado'
+        aprobado TEXT DEFAULT 'Aprobado',
+        grupo_id VARCHAR(100) DEFAULT NULL
       );
+    `;
+
+    // Ensure the grupo_id column exists for existing installations
+    await sql`
+      ALTER TABLE ventas ADD COLUMN IF NOT EXISTS grupo_id VARCHAR(100) DEFAULT NULL;
     `;
 
     // 4. Gastos (Operational expenses)
@@ -1148,7 +1160,8 @@ async function startServer() {
             categoria_id: item.categoria_id || null,
             subcategoria_id: item.subcategoria_id || null,
             imagenes: item.imagenes || null,
-            variants: item.variants || null
+            variants: item.variants || null,
+            created_at: item.created_at ? new Date(item.created_at).toISOString() : null
           };
         });
 
@@ -1204,7 +1217,8 @@ async function startServer() {
         const finalCom = comVal <= 1 ? (comVal * mlVentaVal) : comVal;
         return {
           ...art,
-          comision_ml: finalCom
+          comision_ml: finalCom,
+          created_at: new Date(2026, 5, art.id).toISOString()
         };
       });
       combosList = [...mock_combos];
@@ -3163,7 +3177,8 @@ async function startServer() {
             estado: s.estado || "Procesado",
             aprobado: s.aprobado || "Aprobado",
             total_franquicia: totalFran,
-            total_juem: totalJm
+            total_juem: totalJm,
+            grupo_id: s.grupo_id
           };
         });
       } else {
@@ -3209,7 +3224,8 @@ async function startServer() {
             estado: (s as any).estado || "Procesado",
             aprobado: (s as any).aprobado || "Aprobado",
             total_franquicia: totalFran,
-            total_juem: totalJm
+            total_juem: totalJm,
+            grupo_id: (s as any).grupo_id || null
           };
         });
       }
@@ -3246,6 +3262,7 @@ async function startServer() {
       const channelVal = canal || 'Venta Directa';
       const approvedVal = aprobado || 'Aprobado';
       const globalCostoEnvio = Number(costo_envio || 0);
+      const grupo_id = `VENTA-${Date.now()}-${Math.random().toString(36).substring(2, 7).toUpperCase()}`;
 
       // Construct list of items to process
       let itemsToProcess: { 
@@ -3457,7 +3474,8 @@ async function startServer() {
               fecha, cliente, producto, cantidad, sucursal, canal, costo_envio, 
               precio_venta, comision_ml, precio_compra, ganancia_neta, 
               franquicia_40, juem_60, total_franquicia, total_juem, estado, codigo_art, aprobado,
-              usuario_creacion, fecha_creacion, usuario_modificacion, fecha_modificacion
+              usuario_creacion, fecha_creacion, usuario_modificacion, fecha_modificacion,
+              grupo_id
             )
             VALUES (
               ${saleDate}, 
@@ -3481,7 +3499,8 @@ async function startServer() {
               ${activeUser.usuario},
               ${new Date().toISOString()},
               null,
-              null
+              null,
+              ${grupo_id}
             )
             RETURNING *
           `;
@@ -3506,7 +3525,8 @@ async function startServer() {
             articulo_codigo: targetArt.codigo,
             articulo_nombre: targetArt.nombre,
             usuario_creacion: activeUser.usuario,
-            fecha_creacion: new Date().toISOString()
+            fecha_creacion: new Date().toISOString(),
+            grupo_id: grupo_id
           };
         } else {
           const nextSaleId = mock_ventas.length > 0 ? Math.max(...mock_ventas.map(v => v.id)) + 1 : 1;
@@ -3533,7 +3553,8 @@ async function startServer() {
             articulo_codigo: targetArt.codigo,
             articulo_nombre: targetArt.nombre,
             usuario_creacion: activeUser.usuario,
-            fecha_creacion: new Date().toISOString()
+            fecha_creacion: new Date().toISOString(),
+            grupo_id: grupo_id
           };
           mock_ventas.push(loggedSaleEntry);
         }
