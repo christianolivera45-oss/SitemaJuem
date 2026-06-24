@@ -277,7 +277,8 @@ async function syncStockToEcommerce(id_code: string) {
               colorCode,
               stock: varStock,
               imageUrl: v.imageUrl || v.image || v.imagen_url || imageUrl || "",
-              sku: v.sku || ""
+              sku: v.sku || "",
+              price: Number(v.price !== undefined ? v.price : price)
             };
           }));
         } else {
