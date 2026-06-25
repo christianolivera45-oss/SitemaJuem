@@ -54,7 +54,9 @@ import {
   Filter,
   BookOpen,
   Pin,
-  Receipt
+  Receipt,
+  Link,
+  Globe
 } from 'lucide-react';
 
 interface Article {
@@ -360,6 +362,22 @@ export default function App() {
   const [copiedKey, setCopiedKey] = useState(false);
   const [copiedSuggestedId, setCopiedSuggestedId] = useState<number | null>(null);
   const [showAppsScriptModal, setShowAppsScriptModal] = useState(false);
+
+  // Vincular Artículo como Variante
+  const [isLinkVariantModalOpen, setIsLinkVariantModalOpen] = useState(false);
+  const [linkParentSku, setLinkParentSku] = useState('');
+  const [linkVariantSku, setLinkVariantSku] = useState('');
+  const [linkSize, setLinkSize] = useState('');
+  const [linkColor, setLinkColor] = useState('');
+  const [linkParentSize, setLinkParentSize] = useState('Único');
+  const [linkParentColor, setLinkParentColor] = useState('Negro');
+  const [linkIsSubmitting, setLinkIsSubmitting] = useState(false);
+  const [linkSuccess, setLinkSuccess] = useState('');
+  const [linkError, setLinkError] = useState('');
+  const [parentSearchQuery, setParentSearchQuery] = useState('');
+  const [parentShowDropdown, setParentShowDropdown] = useState(false);
+  const [variantSearchQuery, setVariantSearchQuery] = useState('');
+  const [variantShowDropdown, setVariantShowDropdown] = useState(false);
 
   // DB Connection Diagnostic Modal States
   const [showDbDiagnosticModal, setShowDbDiagnosticModal] = useState(false);
@@ -1331,6 +1349,9 @@ export default function App() {
   }, [varSize, varColor, newArticle.codigo, newArticle.variants]);
   const [articleSuccess, setArticleSuccess] = useState('');
   const [articleError, setArticleError] = useState('');
+  const [isSyncingWeb, setIsSyncingWeb] = useState(false);
+  const [syncWebSuccess, setSyncWebSuccess] = useState('');
+  const [syncWebError, setSyncWebError] = useState('');
 
   const [newGasto, setNewGasto] = useState({
     concepto: '',
@@ -1511,7 +1532,7 @@ export default function App() {
       if (loadedCatalog.length > 0) {
         setSelectedArticle(prev => {
           if (prev) {
-            const fresh = loadedCatalog.find(a => a.id === prev.id);
+            const fresh = loadedCatalog.find(a => a.codigo === prev.codigo);
             return fresh || loadedCatalog[0];
           }
           return loadedCatalog[0];
@@ -1669,6 +1690,30 @@ export default function App() {
     }
   };
 
+  const handleSyncArticleToWeb = async (id: number, codigo: string) => {
+    setIsSyncingWeb(true);
+    setSyncWebSuccess('');
+    setSyncWebError('');
+    try {
+      const res = await fetch(`/api/articulos/${id}/sync-web?codigo=${encodeURIComponent(codigo)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "No se pudo sincronizar.");
+      }
+      setSyncWebSuccess(`¡Sincronización enviada con éxito para el artículo ${codigo}!`);
+      setTimeout(() => setSyncWebSuccess(''), 5500);
+      refreshSystemData();
+    } catch (err: any) {
+      setSyncWebError(err.message || 'Error de red al sincronizar con la web.');
+      setTimeout(() => setSyncWebError(''), 7000);
+    } finally {
+      setIsSyncingWeb(false);
+    }
+  };
+
   const startEditingArticle = (art: Article) => {
     let userCom = '11';
     if (art.comision_ml_raw !== undefined && art.comision_ml_raw !== null && art.comision_ml_raw !== '') {
@@ -1767,8 +1812,196 @@ export default function App() {
 
       setIsEditingArticle(false);
       await refreshSystemData();
+
+      // Update selectedArticle state dynamically with the new values to prevent UI lagging or showing old values
+      setSelectedArticle(prev => {
+        if (!prev) return null;
+        return {
+          ...prev,
+          nombre: editArticleForm.nombre.trim(),
+          precio_venta: generalPrice,
+          costo: Number(editArticleForm.costo || 0),
+          imagen_url: editArticleForm.imagen_url.trim(),
+          mvd_stock: Number(editArticleForm.mvd_stock || 0),
+          pin_stock: Number(editArticleForm.pin_stock || 0),
+          tipo: editArticleForm.tipo,
+          componentes: editArticleForm.componentes,
+          comision_ml: commPct,
+          precio_venta_ml: mlVenta,
+          comision_ml_raw: String(editArticleForm.comision_ml || '11'),
+          original_price: editArticleForm.original_price === '' ? null : Number(editArticleForm.original_price),
+          description: editArticleForm.description,
+          category: editArticleForm.category,
+          subcategory: editArticleForm.subcategory,
+          featured: editArticleForm.featured,
+          paused: editArticleForm.paused,
+          is_3d: editArticleForm.is_3d,
+          consult_only: editArticleForm.consult_only,
+          categoria_id: editArticleForm.categoria_id,
+          subcategoria_id: editArticleForm.subcategoria_id,
+          categoria_id_sec: editArticleForm.categoria_id_sec,
+          subcategoria_id_sec: editArticleForm.subcategoria_id_sec,
+          category_sec: editArticleForm.category_sec,
+          subcategory_sec: editArticleForm.subcategory_sec,
+          imagenes: editArticleForm.imagenes,
+          variants: editArticleForm.variants
+        };
+      });
     } catch (err: any) {
       alert(err.message || "Error al actualizar el artículo.");
+    }
+  };
+
+  const inferColorFromName = (name: string): string => {
+    const n = name.toLowerCase();
+    if (n.includes('negro')) return 'Negro';
+    if (n.includes('blanco')) return 'Blanco';
+    if (n.includes('azul')) return 'Azul';
+    if (n.includes('rosa')) return 'Rosa';
+    if (n.includes('gris')) return 'Gris';
+    if (n.includes('celeste')) return 'Celeste';
+    if (n.includes('verde')) return 'Verde';
+    if (n.includes('rojo')) return 'Rojo';
+    if (n.includes('bordo') || n.includes('bordó')) return 'Bordó';
+    if (n.includes('marron') || n.includes('marrón')) return 'Marrón';
+    if (n.includes('beige')) return 'Beige';
+    if (n.includes('amarillo')) return 'Amarillo';
+    return 'Negro'; // fallback default for winter/accessory products like hats
+  };
+
+  const handleLinkVariantSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLinkError('');
+    setLinkSuccess('');
+
+    const parentSku = linkParentSku.trim();
+    const variantSku = linkVariantSku.trim();
+    const sizeVal = linkSize.trim();
+    const colorVal = linkColor.trim();
+
+    if (!parentSku || !variantSku) {
+      setLinkError('Debes especificar tanto el código padre como el código de la variante.');
+      return;
+    }
+
+    if (parentSku.toLowerCase() === variantSku.toLowerCase()) {
+      setLinkError('El código del artículo base y el de la variante no pueden ser idénticos.');
+      return;
+    }
+
+    const parentProduct = catalog.find(x => x.codigo.toLowerCase() === parentSku.toLowerCase());
+    const variantProduct = catalog.find(x => x.codigo.toLowerCase() === variantSku.toLowerCase());
+
+    if (!parentProduct) {
+      setLinkError(`No se encontró el artículo base con código "${parentSku}" en el catálogo.`);
+      return;
+    }
+
+    if (!variantProduct) {
+      setLinkError(`No se encontró el artículo a vincular con código "${variantSku}" en el catálogo.`);
+      return;
+    }
+
+    setLinkIsSubmitting(true);
+
+    try {
+      // Parse current variants list from parent
+      let currentVariants: any[] = [];
+      try {
+        currentVariants = JSON.parse(parentProduct.variants || '[]');
+      } catch (errJson) {
+        currentVariants = [];
+      }
+
+      // If parent has no variants yet, prepend parent itself as a variant to conserve its original stock, image, and color/size attributes
+      if (currentVariants.length === 0) {
+        const parentVariantObj = {
+          attributes: {
+            talle: linkParentSize.trim() || 'Único',
+            color: linkParentColor.trim() || 'Negro'
+          },
+          stock_montevideo: Number(parentProduct.mvd_stock || 0),
+          stock_pinamar: Number(parentProduct.pin_stock || 0),
+          stock: Number(parentProduct.mvd_stock || 0) + Number(parentProduct.pin_stock || 0),
+          price: String(Math.round(Number(parentProduct.precio_venta || 0))),
+          sku: parentProduct.codigo,
+          imagen_url: parentProduct.imagen_url || ''
+        };
+        currentVariants.push(parentVariantObj);
+      }
+
+      // Check if variant SKU already exists in list
+      const existsIndex = currentVariants.findIndex((v: any) => String(v.sku || '').toLowerCase() === variantSku.toLowerCase());
+
+      const newVariantObj = {
+        attributes: {
+          talle: sizeVal || 'Único',
+          color: colorVal || 'Base'
+        },
+        stock_montevideo: Number(variantProduct.mvd_stock || 0),
+        stock_pinamar: Number(variantProduct.pin_stock || 0),
+        stock: Number(variantProduct.mvd_stock || 0) + Number(variantProduct.pin_stock || 0),
+        price: String(Math.round(Number(variantProduct.precio_venta || parentProduct.precio_venta || 0))),
+        sku: variantProduct.codigo,
+        imagen_url: variantProduct.imagen_url || ''
+      };
+
+      if (existsIndex > -1) {
+        currentVariants[existsIndex] = newVariantObj;
+      } else {
+        currentVariants.push(newVariantObj);
+      }
+
+      const res = await fetch(`/api/articulos/${parentProduct.id}?codigo=${encodeURIComponent(parentProduct.codigo)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          nombre: parentProduct.nombre,
+          precio_venta: Number(parentProduct.precio_venta || 0),
+          costo: Number(parentProduct.costo || 0),
+          imagen_url: parentProduct.imagen_url || '',
+          mvd_stock: Number(parentProduct.mvd_stock || 0),
+          pin_stock: Number(parentProduct.pin_stock || 0),
+          tipo: parentProduct.tipo,
+          componentes: parentProduct.componentes || [],
+          comision_ml: Number(parentProduct.comision_ml || 11),
+          precio_venta_ml: Number(parentProduct.precio_venta_ml || 0),
+          comision_ml_raw: String(parentProduct.comision_ml_raw || '11'),
+          original_price: parentProduct.original_price,
+          description: parentProduct.description || '',
+          category: parentProduct.category || '',
+          subcategory: parentProduct.subcategory || '',
+          featured: !!parentProduct.featured,
+          paused: !!parentProduct.paused,
+          is_3d: !!parentProduct.is_3d,
+          consult_only: !!parentProduct.consult_only,
+          categoria_id: parentProduct.categoria_id,
+          subcategoria_id: parentProduct.subcategoria_id,
+          categoria_id_sec: parentProduct.categoria_id_sec,
+          subcategoria_id_sec: parentProduct.subcategoria_id_sec,
+          category_sec: parentProduct.category_sec || '',
+          subcategory_sec: parentProduct.subcategory_sec || '',
+          imagenes: parentProduct.imagenes || '[]',
+          variants: JSON.stringify(currentVariants),
+          sync_to_web: true
+        })
+      });
+
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || "Error al actualizar las variantes del artículo.");
+      }
+
+      setLinkSuccess(`¡Éxito! El artículo ${variantProduct.codigo} ahora está vinculado como variante de ${parentProduct.codigo} (Talle: ${sizeVal || 'Único'}, Color: ${colorVal || 'Base'}).`);
+      setLinkParentSku('');
+      setLinkVariantSku('');
+      setLinkSize('');
+      setLinkColor('');
+      await refreshSystemData();
+    } catch (err: any) {
+      setLinkError(err.message || 'Error desconocido al vincular variantes.');
+    } finally {
+      setLinkIsSubmitting(false);
     }
   };
 
@@ -3425,43 +3658,65 @@ export default function App() {
                     </span>
                   </div>
                   {sessionUser?.rol === 'Admin' && (
-                    <button
-                      onClick={() => {
-                        setCreationType('simple');
-                        setIsCreateModalOpen(true);
-                        setNewArticleStep(1);
-                        setLastStepChange(Date.now());
-                        setArticleSuccess('');
-                        setArticleError('');
-                        setComboSuccess('');
-                        setComboError('');
-                        setNewArticle({
-                          codigo: getNextAvailableSku(),
-                          nombre: '',
-                          costo: '',
-                          precio_venta: '',
-                          comision_ml: '11',
-                          precio_venta_ml: '',
-                          imagen_url: '',
-                          original_price: '',
-                          description: '',
-                          category: '',
-                          subcategory: '',
-                          featured: false,
-                          paused: false,
-                          is_3d: false,
-                          consult_only: false,
-                          categoria_id: '',
-                          subcategoria_id: '',
-                          imagenes: '',
-                          variants: '[]'
-                        });
-                      }}
-                      className="flex items-center justify-center gap-2 px-5 py-2.5 bg-gradient-to-r from-indigo-600 to-indigo-700 hover:from-indigo-700 hover:to-indigo-800 text-white rounded-xl text-xs font-extrabold shadow-md hover:shadow-lg transition-all focus:outline-none focus:ring-2 focus:ring-indigo-550 whitespace-nowrap cursor-pointer uppercase tracking-wider"
-                    >
-                      <Plus className="w-4 h-4 text-white" />
-                      <span>Crear Artículo</span>
-                    </button>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <button
+                        onClick={() => {
+                          setLinkParentSku('');
+                          setLinkVariantSku('');
+                          setParentSearchQuery('');
+                          setVariantSearchQuery('');
+                          setLinkSize('');
+                          setLinkColor('');
+                          setLinkError('');
+                          setLinkSuccess('');
+                          setParentShowDropdown(false);
+                          setVariantShowDropdown(false);
+                          setIsLinkVariantModalOpen(true);
+                        }}
+                        className="flex items-center justify-center gap-2 px-4 py-2.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-xl text-xs font-extrabold shadow-sm hover:shadow transition-all focus:outline-none focus:ring-2 focus:ring-indigo-300 whitespace-nowrap cursor-pointer uppercase tracking-wider"
+                      >
+                        <Link className="w-3.5 h-3.5 text-indigo-650" />
+                        <span>Vincular Variante</span>
+                      </button>
+
+                      <button
+                        onClick={() => {
+                          setCreationType('simple');
+                          setIsCreateModalOpen(true);
+                          setNewArticleStep(1);
+                          setLastStepChange(Date.now());
+                          setArticleSuccess('');
+                          setArticleError('');
+                          setComboSuccess('');
+                          setComboError('');
+                          setNewArticle({
+                            codigo: getNextAvailableSku(),
+                            nombre: '',
+                            costo: '',
+                            precio_venta: '',
+                            comision_ml: '11',
+                            precio_venta_ml: '',
+                            imagen_url: '',
+                            original_price: '',
+                            description: '',
+                            category: '',
+                            subcategory: '',
+                            featured: false,
+                            paused: false,
+                            is_3d: false,
+                            consult_only: false,
+                            categoria_id: '',
+                            subcategoria_id: '',
+                            imagenes: '',
+                            variants: '[]'
+                          });
+                        }}
+                        className="flex items-center justify-center gap-2 px-5 py-2.5 bg-gradient-to-r from-indigo-600 to-indigo-700 hover:from-indigo-700 hover:to-indigo-800 text-white rounded-xl text-xs font-extrabold shadow-md hover:shadow-lg transition-all focus:outline-none focus:ring-2 focus:ring-indigo-550 whitespace-nowrap cursor-pointer uppercase tracking-wider"
+                      >
+                        <Plus className="w-4 h-4 text-white" />
+                        <span>Crear Artículo</span>
+                      </button>
+                    </div>
                   )}
                 </div>
 
@@ -3593,7 +3848,7 @@ export default function App() {
                         </tr>
                       ) : (
                         paginatedCatalog.map((art, idx) => {
-                          const isSelected = selectedArticle?.id === art.id;
+                          const isSelected = selectedArticle?.codigo === art.codigo;
 
                           return (
                             <tr
@@ -3634,17 +3889,33 @@ export default function App() {
                                 className="py-3.5 px-4 font-semibold text-slate-900 max-w-[220px]" 
                                 title={art.nombre}
                               >
-                                <div className="flex items-center gap-1.5 min-w-0" title={art.nombre}>
-                                  <span 
-                                    className={`truncate ${art.tipo === 'compuesto' ? 'text-blue-600 font-bold' : ''}`}
-                                    title={art.nombre}
-                                  >
-                                    {art.nombre}
-                                  </span>
-                                  {art.tipo === 'compuesto' && (
-                                    <span className="bg-gradient-to-r from-purple-500 to-indigo-600 text-white text-[9px] font-extrabold px-1.5 py-0.5 rounded-full shrink-0 shadow-sm uppercase tracking-wider">
-                                      Combo
+                                <div className="flex flex-col min-w-0">
+                                  <div className="flex items-center gap-1.5 min-w-0" title={art.nombre}>
+                                    <span 
+                                      className={`truncate ${art.tipo === 'compuesto' ? 'text-blue-600 font-bold' : ''}`}
+                                      title={art.nombre}
+                                    >
+                                      {art.nombre}
                                     </span>
+                                    {art.tipo === 'compuesto' && (
+                                      <span className="bg-gradient-to-r from-purple-500 to-indigo-600 text-white text-[9px] font-extrabold px-1.5 py-0.5 rounded-full shrink-0 shadow-sm uppercase tracking-wider">
+                                        Combo
+                                      </span>
+                                    )}
+                                  </div>
+                                  {(art.talle || art.color) && (
+                                    <div className="flex items-center gap-1 mt-1 flex-wrap">
+                                      {art.talle && (
+                                        <span className="text-[9px] bg-slate-100 text-slate-600 font-extrabold px-1.5 py-0.5 rounded uppercase tracking-wide">
+                                          Talle: {art.talle}
+                                        </span>
+                                      )}
+                                      {art.color && (
+                                        <span className="text-[9px] bg-indigo-50 text-indigo-600 font-extrabold px-1.5 py-0.5 rounded uppercase tracking-wide">
+                                          Color: {art.color}
+                                        </span>
+                                      )}
+                                    </div>
                                   )}
                                 </div>
                               </td>
@@ -11686,7 +11957,7 @@ export default function App() {
                                     />
                                     <div className="absolute left-0 right-0 mt-1 bg-white border border-slate-200 rounded-xl shadow-lg max-h-48 overflow-y-auto z-50 divide-y divide-slate-100">
                                       {catalog
-                                        .filter(a => a.tipo === 'simple' && a.id !== selectedArticle?.id)
+                                        .filter(a => a.tipo === 'simple' && a.codigo !== selectedArticle?.codigo)
                                         .filter(art => matchAdvancedSearch([art.nombre, art.codigo], editComboSearchQuery))
                                         .slice(0, 15)
                                         .map(art => (
@@ -11710,7 +11981,7 @@ export default function App() {
                                         ))
                                       }
                                       {catalog
-                                        .filter(a => a.tipo === 'simple' && a.id !== selectedArticle?.id)
+                                        .filter(a => a.tipo === 'simple' && a.codigo !== selectedArticle?.codigo)
                                         .filter(art => matchAdvancedSearch([art.nombre, art.codigo], editComboSearchQuery)).length === 0 && (
                                           <div className="text-center py-3 text-slate-400 text-[10px] font-sans">
                                             No se encontraron componentes simples
@@ -11832,9 +12103,10 @@ export default function App() {
                     </button>
                     <button
                       type="submit"
-                      className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs py-2 px-3 rounded-xl shadow-md transition-all cursor-pointer text-center"
+                      className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs py-2 px-3 rounded-xl shadow-md transition-all cursor-pointer text-center flex items-center justify-center gap-1.5"
                     >
-                      Guardar Cambios
+                      <Check className="w-3.5 h-3.5 text-white/95" />
+                      <span>Guardar Cambios</span>
                     </button>
                   </div>
                 </form>
@@ -12020,6 +12292,20 @@ export default function App() {
               )}
             </div>
 
+            {/* Manual Sync Banners */}
+            {syncWebSuccess && (
+              <div className="mx-6 mb-4 p-3 bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-semibold rounded-xl animate-fade-in flex items-center gap-2">
+                <Check className="w-4 h-4 text-emerald-650 shrink-0" />
+                <span>{syncWebSuccess}</span>
+              </div>
+            )}
+            {syncWebError && (
+              <div className="mx-6 mb-4 p-3 bg-red-50 border border-red-200 text-red-800 text-xs font-semibold rounded-xl animate-fade-in flex items-center gap-2">
+                <X className="w-4 h-4 text-red-650 shrink-0" />
+                <span>{syncWebError}</span>
+              </div>
+            )}
+
             {/* Bottom Footer block */}
             <div className="bg-slate-50 border-t border-slate-150 p-4">
               {isEditingArticle ? (
@@ -12060,25 +12346,49 @@ export default function App() {
                   ) : (
                     /* STANDARD VIEW ACTIONS */
                     <>
-                      <div className="flex items-center gap-3">
+                      <div className="flex items-center gap-2.5 flex-wrap">
                         {/* Red Delete Button */}
                         <button
                           type="button"
                           onClick={() => setShowDeleteConfirm(true)}
-                          className="px-4 py-2 bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold text-xs rounded-xl transition-all cursor-pointer flex items-center gap-1.5 border border-rose-200/50"
+                          className="px-3 py-2 bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold text-xs rounded-xl transition-all cursor-pointer flex items-center gap-1.5 border border-rose-200/50"
                         >
                           <Trash2 className="w-4 h-4 text-rose-600" />
-                          <span>Eliminar Artículo</span>
+                          <span>Eliminar</span>
                         </button>
 
                         {/* Edit Button in footer for ease of use */}
                         <button
                           type="button"
                           onClick={() => startEditingArticle(selectedArticle)}
-                          className="px-4 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-bold text-xs rounded-xl transition-all cursor-pointer flex items-center gap-1.5 border border-indigo-150"
+                          className="px-3 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-bold text-xs rounded-xl transition-all cursor-pointer flex items-center gap-1.5 border border-indigo-150"
                         >
                           <Pencil className="w-4 h-4 text-indigo-650" />
                           <span>Editar</span>
+                        </button>
+
+                        {/* SUBIR A LA WEB Button */}
+                        <button
+                          type="button"
+                          disabled={isSyncingWeb}
+                          onClick={() => handleSyncArticleToWeb(selectedArticle.id, selectedArticle.codigo)}
+                          className={`px-3 py-2 font-bold text-xs rounded-xl transition-all cursor-pointer flex items-center gap-1.5 border ${
+                            isSyncingWeb 
+                              ? 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed' 
+                              : 'bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border-emerald-200'
+                          }`}
+                        >
+                          {isSyncingWeb ? (
+                            <>
+                              <RefreshCw className="w-4 h-4 animate-spin text-slate-400" />
+                              <span>Sincronizando...</span>
+                            </>
+                          ) : (
+                            <>
+                              <Globe className="w-4 h-4 text-emerald-600" />
+                              <span>Subir a la Web</span>
+                            </>
+                          )}
                         </button>
                       </div>
 
@@ -12851,6 +13161,280 @@ export default function App() {
                   className="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl cursor-pointer disabled:opacity-50 transition-colors shadow-md shadow-indigo-600/10 flex items-center gap-1.5"
                 >
                   {quickCreateRepSubmitting ? "Registrando..." : "Registrar Artículo y Seleccionar"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {isLinkVariantModalOpen && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-50 overflow-y-auto">
+          <div className="bg-white rounded-2xl max-w-lg w-full p-6 border border-slate-200 shadow-2xl relative my-8 text-xs font-medium text-slate-700">
+            {/* Header */}
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3.5 mb-5">
+              <div className="flex items-center gap-2">
+                <Link className="w-5 h-5 text-indigo-600" />
+                <h2 className="text-sm font-bold text-slate-900 font-display uppercase tracking-wider">
+                  Vincular Artículo como Variante
+                </h2>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsLinkVariantModalOpen(false)}
+                className="text-slate-400 hover:text-slate-600 font-bold text-base cursor-pointer transition-colors p-1"
+                aria-label="Cerrar modal"
+              >
+                ✕
+              </button>
+            </div>
+
+            <p className="text-[11px] text-slate-500 mb-4 leading-relaxed">
+              Esta herramienta permite vincular de manera rápida un artículo simple existente como variante de otro producto. Se sincronizará automáticamente con WooCommerce.
+            </p>
+
+            <form onSubmit={handleLinkVariantSubmit} className="space-y-4">
+              {linkSuccess && (
+                <div className="p-3 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-xl text-[11px] font-semibold leading-relaxed">
+                  {linkSuccess}
+                </div>
+              )}
+
+              {linkError && (
+                <div className="p-3 bg-rose-50 border border-rose-200 text-rose-800 rounded-xl text-[11px] font-semibold">
+                  {linkError}
+                </div>
+              )}
+
+              {/* Parent Article Selection */}
+              <div className="relative space-y-1">
+                <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">Producto Base (Padre - p. ej. J029)</label>
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" />
+                  <input
+                    type="text"
+                    placeholder="Escribe para buscar el producto base por SKU o nombre..."
+                    value={parentSearchQuery}
+                    onChange={(e) => {
+                      setParentSearchQuery(e.target.value);
+                      setLinkParentSku(e.target.value);
+                      setParentShowDropdown(true);
+                    }}
+                    onFocus={() => setParentShowDropdown(true)}
+                    className="w-full bg-slate-50 pl-9 pr-3 py-2 text-xs border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 text-slate-900 font-bold"
+                  />
+                </div>
+                {parentShowDropdown && (
+                  <div className="absolute z-50 left-0 right-0 max-h-48 overflow-y-auto bg-white border border-slate-200 rounded-xl shadow-lg mt-1 divide-y divide-slate-50">
+                    {catalog
+                      .filter(art => 
+                        art.codigo.toLowerCase().includes(parentSearchQuery.toLowerCase()) ||
+                        art.nombre.toLowerCase().includes(parentSearchQuery.toLowerCase())
+                      )
+                      .slice(0, 5)
+                      .map(art => (
+                        <div
+                          key={art.id}
+                          onClick={() => {
+                            setLinkParentSku(art.codigo);
+                            setParentSearchQuery(`${art.codigo} - ${art.nombre}`);
+                            setParentShowDropdown(false);
+                            const infColor = inferColorFromName(art.nombre);
+                            setLinkParentColor(infColor);
+                          }}
+                          className="px-3 py-2 hover:bg-indigo-50 cursor-pointer flex justify-between items-center text-[11px] font-semibold text-slate-800"
+                        >
+                          <span>{art.codigo} - {art.nombre}</span>
+                          <span className="text-[9px] bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded font-bold">
+                            {art.tipo === 'compuesto' ? 'Combo' : 'Simple'}
+                          </span>
+                        </div>
+                      ))}
+                    {catalog.filter(art => 
+                      art.codigo.toLowerCase().includes(parentSearchQuery.toLowerCase()) ||
+                      art.nombre.toLowerCase().includes(parentSearchQuery.toLowerCase())
+                    ).length === 0 && (
+                      <div className="px-3 py-2.5 text-slate-450 text-[11px] italic">No se encontraron productos.</div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* Variant Article Selection */}
+              <div className="relative space-y-1">
+                <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">Artículo a Vincular (Variante - p. ej. J107)</label>
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" />
+                  <input
+                    type="text"
+                    placeholder="Escribe para buscar el artículo variante..."
+                    value={variantSearchQuery}
+                    onChange={(e) => {
+                      setVariantSearchQuery(e.target.value);
+                      setLinkVariantSku(e.target.value);
+                      setVariantShowDropdown(true);
+                    }}
+                    onFocus={() => setVariantShowDropdown(true)}
+                    className="w-full bg-slate-50 pl-9 pr-3 py-2 text-xs border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 text-slate-900 font-bold"
+                  />
+                </div>
+                {variantShowDropdown && (
+                  <div className="absolute z-50 left-0 right-0 max-h-48 overflow-y-auto bg-white border border-slate-200 rounded-xl shadow-lg mt-1 divide-y divide-slate-50">
+                    {catalog
+                      .filter(art => 
+                        art.codigo.toLowerCase().includes(variantSearchQuery.toLowerCase()) ||
+                        art.nombre.toLowerCase().includes(variantSearchQuery.toLowerCase())
+                      )
+                      .slice(0, 5)
+                      .map(art => (
+                        <div
+                          key={art.id}
+                          onClick={() => {
+                            setLinkVariantSku(art.codigo);
+                            setVariantSearchQuery(`${art.codigo} - ${art.nombre}`);
+                            setVariantShowDropdown(false);
+                          }}
+                          className="px-3 py-2 hover:bg-indigo-50 cursor-pointer flex justify-between items-center text-[11px] font-semibold text-slate-800"
+                        >
+                          <span>{art.codigo} - {art.nombre}</span>
+                          <span className="text-[9px] bg-indigo-50 text-indigo-600 px-1.5 py-0.5 rounded font-bold font-mono">
+                            Stock: {Number(art.mvd_stock || 0) + Number(art.pin_stock || 0)}
+                          </span>
+                        </div>
+                      ))}
+                    {catalog.filter(art => 
+                      art.codigo.toLowerCase().includes(variantSearchQuery.toLowerCase()) ||
+                      art.nombre.toLowerCase().includes(variantSearchQuery.toLowerCase())
+                    ).length === 0 && (
+                      <div className="px-3 py-2.5 text-slate-450 text-[11px] italic">No se encontraron artículos.</div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* Initial attributes setup for the parent product if it has no variants yet */}
+              {(() => {
+                const parentProduct = catalog.find(x => x.codigo.toLowerCase() === linkParentSku.toLowerCase());
+                const hasNoPrevVariants = parentProduct && (!parentProduct.variants || parentProduct.variants === '[]' || JSON.parse(parentProduct.variants).length === 0);
+                if (!hasNoPrevVariants) return null;
+                return (
+                  <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-xl space-y-3">
+                    <div className="flex items-center gap-1.5 text-amber-800 font-bold text-[10px] uppercase tracking-wider">
+                      <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse"></span>
+                      Variante Inicial del Producto Base
+                    </div>
+                    <p className="text-[10px] text-amber-700 leading-normal font-semibold">
+                      Este artículo base aún no tiene variantes registradas. Para conservar su stock e imagen, se guardará a sí mismo como la primera variante. Define sus atributos iniciales:
+                    </p>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="space-y-1">
+                        <label className="text-[9px] font-extrabold text-amber-800 uppercase tracking-wider block">Talle Base (ej. Único)</label>
+                        <input
+                          type="text"
+                          required
+                          placeholder="ej. Único"
+                          value={linkParentSize}
+                          onChange={(e) => setLinkParentSize(e.target.value)}
+                          className="w-full bg-white px-3 py-1.5 text-xs border border-amber-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-amber-400 text-slate-900 font-bold shadow-sm"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[9px] font-extrabold text-amber-800 uppercase tracking-wider block">Color Base (ej. Negro)</label>
+                        <input
+                          type="text"
+                          required
+                          placeholder="ej. Negro"
+                          value={linkParentColor}
+                          onChange={(e) => setLinkParentColor(e.target.value)}
+                          className="w-full bg-white px-3 py-1.5 text-xs border border-amber-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-amber-400 text-slate-900 font-bold shadow-sm"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* Attributes (Talle & Color) */}
+              <div className="grid grid-cols-2 gap-3.5">
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">Talle (p. ej. M, XL, 38, Único)</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="ej. XL"
+                    value={linkSize}
+                    onChange={(e) => setLinkSize(e.target.value)}
+                    className="w-full bg-slate-50 px-3 py-2 text-xs border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 text-slate-900 font-bold"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">Color (p. ej. Azul, Rosa, Negro)</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="ej. Azul"
+                    value={linkColor}
+                    onChange={(e) => setLinkColor(e.target.value)}
+                    className="w-full bg-slate-50 px-3 py-2 text-xs border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 text-slate-900 font-bold"
+                  />
+                </div>
+              </div>
+
+              {/* Details of selected variant */}
+              {(() => {
+                const parent = catalog.find(x => x.codigo.toLowerCase() === linkParentSku.toLowerCase());
+                const variant = catalog.find(x => x.codigo.toLowerCase() === linkVariantSku.toLowerCase());
+                if (!parent || !variant) return null;
+                return (
+                  <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-150 space-y-2 text-[11px]">
+                    <div className="font-extrabold text-slate-800 uppercase text-[9px] tracking-wider mb-1.5">Resumen de Vinculación:</div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">Producto Base:</span>
+                      <span className="font-bold text-slate-900">{parent.nombre} ({parent.codigo})</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">Variante a Vincular:</span>
+                      <span className="font-bold text-slate-900">{variant.nombre} ({variant.codigo})</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">Stock a Transferir:</span>
+                      <span className="font-mono font-bold text-indigo-700 bg-indigo-50 px-1.5 py-0.5 rounded">
+                        MVD: {variant.mvd_stock || 0} | PIN: {variant.pin_stock || 0} (Total: {Number(variant.mvd_stock || 0) + Number(variant.pin_stock || 0)})
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">Precio de la Variante:</span>
+                      <span className="font-bold text-slate-900">${Math.round(Number(variant.precio_venta || parent.precio_venta || 0)).toLocaleString('es-UY')}</span>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              <div className="flex items-center justify-end gap-2.5 pt-3.5 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setIsLinkVariantModalOpen(false)}
+                  className="px-4 py-2 text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-extrabold transition-colors cursor-pointer uppercase tracking-wider"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={linkIsSubmitting}
+                  className="px-5 py-2.5 bg-gradient-to-r from-indigo-600 to-indigo-700 hover:from-indigo-700 hover:to-indigo-800 text-white rounded-xl text-xs font-extrabold shadow-md transition-all uppercase tracking-wider flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                >
+                  {linkIsSubmitting ? (
+                    <>
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      <span>Vinculando...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Link className="w-3.5 h-3.5" />
+                      <span>Confirmar y Vincular</span>
+                    </>
+                  )}
                 </button>
               </div>
             </form>
