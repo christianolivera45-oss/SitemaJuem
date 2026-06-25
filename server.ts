@@ -40,7 +40,7 @@ function idToCode(id: number): string {
 }
 
 // Background stock sync function to call external e-commerce
-async function syncStockToEcommerce(id_code: string) {
+async function syncStockToEcommerce(id_code: string, createIfMissing: boolean = false) {
   try {
     if (!id_code) return;
     const cleanCode = id_code.trim();
@@ -80,7 +80,7 @@ async function syncStockToEcommerce(id_code: string) {
       const parentName = parentRow.name || parentRow.nombre || '';
       if (parentSku && parentSku.toLowerCase().trim() !== cleanCode.toLowerCase()) {
         console.log(`[SYNC RUN RE-ROUTE] Re-routing sync for variant SKU "${cleanCode}" to parent product "${parentSku}" ("${parentName}")`);
-        return syncStockToEcommerce(parentSku);
+        return syncStockToEcommerce(parentSku, createIfMissing);
       }
     }
 
@@ -173,140 +173,193 @@ async function syncStockToEcommerce(id_code: string) {
     let ecomUrl = process.env.SYNC_PRODUCT_URL || 'https://juem.com.uy/api/integrations/sync-product';
     const secretKey = process.env.INTEGRATION_SECRET || 'sync_stock_default_secret_3322';
 
-    const bodyData: any = {
-      secretKey: secretKey,
-      codigo: cleanCode,
-      name: name.split(' - ')[0].trim(),
-      price: price,
-      stock: totalStock
-    };
+    let bodyData: any;
 
-    if (originalPrice !== null && originalPrice !== undefined && originalPrice > 0) {
-      bodyData.originalPrice = originalPrice;
-    }
-    if (description) {
-      bodyData.description = description;
-    }
-    if (category) {
-      bodyData.category = category;
-    }
-    if (subcategory) {
-      bodyData.subcategory = subcategory;
-    }
-    if (categoria_id) {
-      bodyData.categoria_id = categoria_id;
-    }
-    if (subcategoria_id) {
-      bodyData.subcategoria_id = subcategoria_id;
-    }
-    if (categoria_id_sec) {
-      bodyData.categoria_id_sec = categoria_id_sec;
-    }
-    if (subcategoria_id_sec) {
-      bodyData.subcategoria_id_sec = subcategoria_id_sec;
-    }
-    if (category_sec) {
-      bodyData.category_sec = category_sec;
-    }
-    if (subcategory_sec) {
-      bodyData.subcategory_sec = subcategory_sec;
-    }
-    if (imageUrl) {
-      bodyData.imageUrl = imageUrl;
-    }
-    if (imagenes) {
-      try {
-        if (imagenes.trim().startsWith('[')) {
-          bodyData.imagenes = JSON.parse(imagenes);
-        } else {
+    if (!createIfMissing) {
+      bodyData = {
+        secretKey: secretKey,
+        codigo: cleanCode,
+        stock: totalStock,
+        create_if_missing: false,
+        update_only: true,
+        action: "sync-stock"
+      };
+
+      if (variants) {
+        try {
+          const rawVariants = typeof variants === 'string' ? JSON.parse(variants) : variants;
+          if (Array.isArray(rawVariants) && rawVariants.length > 0) {
+            bodyData.variants = await Promise.all(rawVariants.map(async (v: any) => {
+              let varStock = Number(v.stock !== undefined ? v.stock : (v.stock_montevideo !== undefined ? (Number(v.stock_montevideo) + Number(v.stock_pinamar || 0)) : totalStock));
+              if (v.sku && v.sku.toLowerCase() !== cleanCode.toLowerCase()) {
+                if (sql) {
+                  try {
+                    const varRows = await sql`SELECT stock_montevideo, stock_pinamar FROM stock WHERE LOWER(id_code) = LOWER(${v.sku})`;
+                    if (varRows.length > 0) {
+                      varStock = Number(varRows[0].stock_montevideo || 0) + Number(varRows[0].stock_pinamar || 0);
+                    }
+                  } catch (e) {
+                    console.error(`Error loading stock for variant SKU ${v.sku} in syncStockToEcommerce:`, e);
+                  }
+                } else {
+                  const numericId = codeToId(v.sku);
+                  const foundMvd = mock_stock.find(s => s.articulo_id === numericId && s.sucursal === 'Mvd');
+                  const foundPin = mock_stock.find(s => s.articulo_id === numericId && s.sucursal === 'Pin');
+                  varStock = (foundMvd ? Number(foundMvd.cantidad || 0) : 0) + (foundPin ? Number(foundPin.cantidad || 0) : 0);
+                }
+              }
+              return {
+                sku: v.sku || "",
+                stock: varStock
+              };
+            }));
+          } else {
+            bodyData.variants = [];
+          }
+        } catch (err) {
+          bodyData.variants = [];
+        }
+      } else {
+        bodyData.variants = [];
+      }
+    } else {
+      bodyData = {
+        secretKey: secretKey,
+        codigo: cleanCode,
+        name: name.split(' - ')[0].trim(),
+        price: price,
+        stock: totalStock,
+        create_if_missing: true,
+        update_only: false
+      };
+
+      if (originalPrice !== null && originalPrice !== undefined && originalPrice > 0) {
+        bodyData.originalPrice = originalPrice;
+      }
+      if (description) {
+        bodyData.description = description;
+      }
+      if (category) {
+        bodyData.category = category;
+      }
+      if (subcategory) {
+        bodyData.subcategory = subcategory;
+      }
+      if (categoria_id) {
+        bodyData.categoria_id = categoria_id;
+      }
+      if (subcategoria_id) {
+        bodyData.subcategoria_id = subcategoria_id;
+      }
+      if (categoria_id_sec) {
+        bodyData.categoria_id_sec = categoria_id_sec;
+      }
+      if (subcategoria_id_sec) {
+        bodyData.subcategoria_id_sec = subcategoria_id_sec;
+      }
+      if (category_sec) {
+        bodyData.category_sec = category_sec;
+      }
+      if (subcategory_sec) {
+        bodyData.subcategory_sec = subcategory_sec;
+      }
+      if (imageUrl) {
+        bodyData.imageUrl = imageUrl;
+      }
+      if (imagenes) {
+        try {
+          if (imagenes.trim().startsWith('[')) {
+            bodyData.imagenes = JSON.parse(imagenes);
+          } else {
+            bodyData.imagenes = imagenes.split(',').map(s => s.trim()).filter(Boolean);
+          }
+        } catch (err) {
           bodyData.imagenes = imagenes.split(',').map(s => s.trim()).filter(Boolean);
         }
-      } catch (err) {
-        bodyData.imagenes = imagenes.split(',').map(s => s.trim()).filter(Boolean);
       }
-    }
-    if (variants) {
-      try {
-        const rawVariants = typeof variants === 'string' ? JSON.parse(variants) : variants;
-        if (Array.isArray(rawVariants) && rawVariants.length > 0) {
-          bodyData.variants = await Promise.all(rawVariants.map(async (v: any) => {
-            const size = v.size || v.attributes?.talle || v.attributes?.size || v.talle || "Único";
-            const color = v.color || v.attributes?.color || "Base";
-            const colorLower = color.trim().toLowerCase();
-            
-            let colorCode = v.colorCode || v.attributes?.colorCode || "";
-            if (!colorCode) {
-              if (colorLower.includes("rosa")) colorCode = "#ec4899";
-              else if (colorLower.includes("celeste")) colorCode = "#38bdf8";
-              else if (colorLower.includes("negro")) colorCode = "#000000";
-              else if (colorLower.includes("blanco")) colorCode = "#ffffff";
-              else if (colorLower.includes("turquesa")) colorCode = "#06b6d4";
-              else if (colorLower.includes("azul")) colorCode = "#1d4ed8";
-              else if (colorLower.includes("gris")) colorCode = "#6b7280";
-              else colorCode = "#cbd5e1"; // fallback color
-            }
-
-            // Retrieve live current stock of this variant from database if it has its own SKU row.
-            // If the variant SKU is identical to the parent SKU, use the variant's locally defined stock
-            // to avoid pulling the parent item's total combined stock sum.
-            let varStock = Number(v.stock !== undefined ? v.stock : (v.stock_montevideo !== undefined ? (Number(v.stock_montevideo) + Number(v.stock_pinamar || 0)) : totalStock));
-            if (v.sku && v.sku.toLowerCase() !== cleanCode.toLowerCase()) {
-              if (sql) {
-                try {
-                  const varRows = await sql`SELECT stock_montevideo, stock_pinamar FROM stock WHERE LOWER(id_code) = LOWER(${v.sku})`;
-                  if (varRows.length > 0) {
-                    varStock = Number(varRows[0].stock_montevideo || 0) + Number(varRows[0].stock_pinamar || 0);
-                  }
-                } catch (e) {
-                  console.error(`Error loading stock for variant SKU ${v.sku} in syncStockToEcommerce:`, e);
-                }
-              } else {
-                const numericId = codeToId(v.sku);
-                const foundMvd = mock_stock.find(s => s.articulo_id === numericId && s.sucursal === 'Mvd');
-                const foundPin = mock_stock.find(s => s.articulo_id === numericId && s.sucursal === 'Pin');
-                varStock = (foundMvd ? Number(foundMvd.cantidad || 0) : 0) + (foundPin ? Number(foundPin.cantidad || 0) : 0);
+      if (variants) {
+        try {
+          const rawVariants = typeof variants === 'string' ? JSON.parse(variants) : variants;
+          if (Array.isArray(rawVariants) && rawVariants.length > 0) {
+            bodyData.variants = await Promise.all(rawVariants.map(async (v: any) => {
+              const size = v.size || v.attributes?.talle || v.attributes?.size || v.talle || "Único";
+              const color = v.color || v.attributes?.color || "Base";
+              const colorLower = color.trim().toLowerCase();
+              
+              let colorCode = v.colorCode || v.attributes?.colorCode || "";
+              if (!colorCode) {
+                if (colorLower.includes("rosa")) colorCode = "#ec4899";
+                else if (colorLower.includes("celeste")) colorCode = "#38bdf8";
+                else if (colorLower.includes("negro")) colorCode = "#000000";
+                else if (colorLower.includes("blanco")) colorCode = "#ffffff";
+                else if (colorLower.includes("turquesa")) colorCode = "#06b6d4";
+                else if (colorLower.includes("azul")) colorCode = "#1d4ed8";
+                else if (colorLower.includes("gris")) colorCode = "#6b7280";
+                else colorCode = "#cbd5e1"; // fallback color
               }
-            }
 
-            const varPrice = Number(v.price !== undefined ? v.price : price);
-            const priceDelta = varPrice > price ? (varPrice - price) : 0;
+              // Retrieve live current stock of this variant from database if it has its own SKU row.
+              // If the variant SKU is identical to the parent SKU, use the variant's locally defined stock
+              // to avoid pulling the parent item's total combined stock sum.
+              let varStock = Number(v.stock !== undefined ? v.stock : (v.stock_montevideo !== undefined ? (Number(v.stock_montevideo) + Number(v.stock_pinamar || 0)) : totalStock));
+              if (v.sku && v.sku.toLowerCase() !== cleanCode.toLowerCase()) {
+                if (sql) {
+                  try {
+                    const varRows = await sql`SELECT stock_montevideo, stock_pinamar FROM stock WHERE LOWER(id_code) = LOWER(${v.sku})`;
+                    if (varRows.length > 0) {
+                      varStock = Number(varRows[0].stock_montevideo || 0) + Number(varRows[0].stock_pinamar || 0);
+                    }
+                  } catch (e) {
+                    console.error(`Error loading stock for variant SKU ${v.sku} in syncStockToEcommerce:`, e);
+                  }
+                } else {
+                  const numericId = codeToId(v.sku);
+                  const foundMvd = mock_stock.find(s => s.articulo_id === numericId && s.sucursal === 'Mvd');
+                  const foundPin = mock_stock.find(s => s.articulo_id === numericId && s.sucursal === 'Pin');
+                  varStock = (foundMvd ? Number(foundMvd.cantidad || 0) : 0) + (foundPin ? Number(foundPin.cantidad || 0) : 0);
+                }
+              }
 
-            return {
-              sku: v.sku || "",
-              size,
-              color,
-              colorCode,
-              stock: varStock,
-              imageUrl: v.imageUrl || v.image || v.imagen_url || imageUrl || "",
-              price: varPrice,
-              priceDelta: priceDelta
-            };
-          }));
+              const varPrice = Number(v.price !== undefined ? v.price : price);
+              const priceDelta = varPrice > price ? (varPrice - price) : 0;
 
-          // Unique lists for sizes and colors
-          bodyData.sizes = Array.from(new Set(bodyData.variants.map((v: any) => v.size).filter(Boolean)));
-          bodyData.colors = Array.from(new Set(bodyData.variants.map((v: any) => v.color).filter(Boolean)));
-        } else {
+              return {
+                sku: v.sku || "",
+                size,
+                color,
+                colorCode,
+                stock: varStock,
+                imageUrl: v.imageUrl || v.image || v.imagen_url || imageUrl || "",
+                price: varPrice,
+                priceDelta: priceDelta
+              };
+            }));
+
+            // Unique lists for sizes and colors
+            bodyData.sizes = Array.from(new Set(bodyData.variants.map((v: any) => v.size).filter(Boolean)));
+            bodyData.colors = Array.from(new Set(bodyData.variants.map((v: any) => v.color).filter(Boolean)));
+          } else {
+            bodyData.sizes = [];
+            bodyData.colors = [];
+            bodyData.variants = [];
+          }
+        } catch (err) {
           bodyData.sizes = [];
           bodyData.colors = [];
           bodyData.variants = [];
         }
-      } catch (err) {
+      } else {
         bodyData.sizes = [];
         bodyData.colors = [];
         bodyData.variants = [];
       }
-    } else {
-      bodyData.sizes = [];
-      bodyData.colors = [];
-      bodyData.variants = [];
+      bodyData.featured = !!featured;
+      bodyData.paused = !!paused;
+      bodyData.is3D = !!is3D;
+      bodyData.consultOnly = !!consultOnly;
     }
-    bodyData.featured = !!featured;
-    bodyData.paused = !!paused;
-    bodyData.is3D = !!is3D;
-    bodyData.consultOnly = !!consultOnly;
 
-    console.log(`[SYNC UNIFICADO WEB] Sincronizando artículo ${cleanCode} ("${name}") con la tienda web: ${ecomUrl}. Stock: ${totalStock}, Precio Web/Face/Insta: $${price}`);
+    console.log(`[SYNC UNIFICADO WEB] Sincronizando artículo ${cleanCode} ("${name}") con la tienda web: ${ecomUrl}. Stock: ${totalStock}, Precio Web/Face/Insta: $${price}, Creación: ${createIfMissing}`);
 
     // Call fetch in background asynchronously with a 120-second timeout
     const controller = new AbortController();
@@ -417,13 +470,7 @@ let mock_finanzas_cuentas = [
   { id: 3, nombre: "Itaú Uruguay", saldo: 32000.0, tipo: "banco" }
 ];
 
-let mock_finanzas_movimientos = [
-  { id: 1, fecha: new Date(Date.now() - 3 * 24 * 3600 * 1000).toISOString(), origen_cuenta: "Itaú Uruguay", destino_cuenta: null, monto: 3500.0, tipo: "ingreso", concepto: "Venta Directa Mate Ensamble Mvd", estado: "completado", vencimiento: null, referencia_id: null },
-  { id: 2, fecha: new Date(Date.now() - 2 * 24 * 3600 * 1000).toISOString(), origen_cuenta: null, destino_cuenta: "Banco República (BROU)", monto: 12000.0, tipo: "egreso", concepto: "Pago de Alquiler Almacén Pinamar", estado: "completado", vencimiento: null, referencia_id: null },
-  { id: 3, fecha: new Date(Date.now() - 1 * 24 * 3600 * 1000).toISOString(), origen_cuenta: "Caja Chica (Mostrador)", destino_cuenta: "Banco República (BROU)", monto: 5000.0, tipo: "transferencia", concepto: "Arqueo diario de mostrador a BROU", estado: "completado", vencimiento: null, referencia_id: null },
-  { id: 4, fecha: new Date().toISOString(), origen_cuenta: "Interno", destino_cuenta: null, monto: 4500.0, tipo: "pendiente_cobro", concepto: "Cobro pendiente envío DAC #1042", estado: "pendiente", vencimiento: new Date(Date.now() + 5 * 24 * 3600 * 1000).toISOString(), referencia_id: null },
-  { id: 5, fecha: new Date().toISOString(), origen_cuenta: null, destino_cuenta: "Interno", monto: 6500.0, tipo: "pendiente_pago", concepto: "Factura pendiente proveedor insumos", estado: "pendiente", vencimiento: new Date(Date.now() + 10 * 24 * 3600 * 1000).toISOString(), referencia_id: null }
-];
+let mock_finanzas_movimientos: any[] = [];
 
 let mock_arqueos_caja: any[] = [
   {
@@ -951,6 +998,18 @@ async function initDb() {
     }
 
     // Check if finanzas_movimientos is empty, seed defaults
+    try {
+      await sql`DELETE FROM finanzas_movimientos WHERE concepto IN (
+        'Venta Directa Mate Ensamble Mvd',
+        'Pago de Alquiler Almacén Pinamar',
+        'Arqueo diario de mostrador a BROU',
+        'Cobro pendiente envío DAC #1042',
+        'Factura pendiente proveedor insumos'
+      )`;
+    } catch (errCleanMov) {
+      console.log("Cleanup of mock movements skipped/failed:", errCleanMov.message || errCleanMov);
+    }
+
     const movementsCount = await sql`SELECT count(*) as count FROM finanzas_movimientos`;
     if (parseInt(movementsCount[0].count) === 0) {
       console.log("Seeding default financial transaction history ledgers...");
@@ -2133,7 +2192,8 @@ async function startServer() {
       }
 
       // Sync stock and product details with Web E-commerce unconditionally on creation
-      syncStockToEcommerce(codigo);
+      const shouldSyncToWeb = sync_to_web === true || sync_to_web === 'true';
+      syncStockToEcommerce(codigo, shouldSyncToWeb);
 
       res.json({ success: true, item: savedItem });
     } catch (err: any) {
@@ -4060,7 +4120,8 @@ async function startServer() {
         canal, 
         precio_venta, 
         costo_envio, 
-        aprobado 
+        aprobado,
+        fecha
       } = req.body;
 
       let targetSale: any = null;
@@ -4095,6 +4156,7 @@ async function startServer() {
           const s = dbSaleMatches[0];
           targetSale = {
             id: s.id,
+            fecha: s.fecha,
             cliente: s.cliente,
             articulo_id: codeToId(s.codigo_art),
             articulo_codigo: s.codigo_art || "",
@@ -4112,6 +4174,7 @@ async function startServer() {
           const art = catalogItems.find(a => a.id === mSale.articulo_id);
           targetSale = {
             id: mSale.id,
+            fecha: mSale.fecha,
             cliente: mSale.cliente,
             articulo_id: mSale.articulo_id,
             articulo_codigo: art?.codigo || "N/A",
@@ -4260,6 +4323,7 @@ async function startServer() {
         await sql`
           UPDATE ventas 
           SET 
+            fecha = ${fecha ? new Date(fecha).toISOString() : targetSale.fecha},
             cliente = ${cliente || targetSale.cliente},
             producto = ${targetArtNew.nombre},
             cantidad = ${qtyNew},
@@ -4285,6 +4349,7 @@ async function startServer() {
         if (idx !== -1) {
           mock_ventas[idx] = {
             ...mock_ventas[idx],
+            fecha: fecha ? new Date(fecha).toISOString() : targetSale.fecha,
             cliente: cliente || targetSale.cliente,
             articulo_id: updatedArtId,
             producto: targetArtNew.nombre,

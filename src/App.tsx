@@ -29,6 +29,8 @@ import {
   User,
   Plus,
   ArrowRight,
+  ArrowLeft,
+  ChevronLeft,
   Sparkles,
   MapPin,
   FileSpreadsheet,
@@ -227,10 +229,10 @@ export default function App() {
     if (user.rol === 'Admin') {
       setActiveTab('mando');
     } else {
-      const allTabsOrder = ['stock', 'ventas', 'combos', 'ingreso', 'traslados', 'envios', 'gastos', 'finanzas', 'copiloto-ia'];
+      const allTabsOrder = ['mando', 'stock', 'ventas', 'combos', 'ingreso', 'traslados', 'envios', 'gastos', 'finanzas', 'copiloto-ia'];
       const userSecciones = user.secciones || 'all';
       if (userSecciones === 'all') {
-        setActiveTab('stock');
+        setActiveTab('mando');
       } else {
         const allowed = allTabsOrder.find(t => userSecciones.split(',').includes(t));
         setActiveTab(allowed || 'stock');
@@ -243,11 +245,29 @@ export default function App() {
     safeStorage.removeItem('juem_session_user');
     setSessionToken(null);
     setSessionUser(null);
-    setActiveTab('stock');
+    setActiveTab('mando');
   };
 
   // Navigation & Screen selection
-  const [activeTab, setActiveTab] = useState<string>('stock');
+  const [activeTab, setActiveTab] = useState<string>(() => {
+    const cached = safeStorage.getItem('juem_session_user');
+    if (cached) {
+      try {
+        const u = JSON.parse(cached);
+        if (u.rol === 'Admin') return 'mando';
+        
+        const userSecciones = u.secciones || 'all';
+        if (userSecciones === 'all') return 'mando';
+        
+        const allTabsOrder = ['mando', 'stock', 'ventas', 'combos', 'ingreso', 'traslados', 'envios', 'gastos', 'finanzas', 'copiloto-ia'];
+        const allowed = allTabsOrder.find(t => userSecciones.split(',').includes(t));
+        return allowed || 'stock';
+      } catch {
+        return 'mando';
+      }
+    }
+    return 'mando';
+  });
 
   const hasAccessToTab = (tabId: string): boolean => {
     if (!sessionUser) return false;
@@ -765,6 +785,97 @@ export default function App() {
   const [editIsSubmitting, setEditIsSubmitting] = useState(false);
   const [editError, setEditError] = useState('');
 
+  // Grouped sale editing states (for complete factura/sale group)
+  const [editingGroup, setEditingGroup] = useState<any | null>(null);
+  const [editGroupCliente, setEditGroupCliente] = useState('');
+  const [editGroupCanal, setEditGroupCanal] = useState('Venta Directa');
+  const [editGroupSucursal, setEditGroupSucursal] = useState<'Mvd' | 'Pin'>('Mvd');
+  const [editGroupFecha, setEditGroupFecha] = useState('');
+  const [editGroupCostoEnvio, setEditGroupCostoEnvio] = useState(0);
+  const [editGroupAprobado, setEditGroupAprobado] = useState('Aprobado');
+  const [editGroupItems, setEditGroupItems] = useState<any[]>([]); // { id, articulo_id, cantidad, precio_venta }
+  const [deletedGroupItemIds, setDeletedGroupItemIds] = useState<number[]>([]);
+  const [editGroupIsSubmitting, setEditGroupIsSubmitting] = useState(false);
+  const [editGroupError, setEditGroupError] = useState('');
+
+  const handleStartEditGroupedSale = (g: any) => {
+    setEditingGroup(g);
+    setEditGroupCliente(g.cliente || '');
+    setEditGroupCanal(g.canal || 'Venta Directa');
+    setEditGroupSucursal(g.sucursal);
+    const dateVal = g.fecha ? g.fecha.split('T')[0] : getLocalDateString();
+    setEditGroupFecha(dateVal);
+    setEditGroupCostoEnvio(g.costo_envio || 0);
+    setEditGroupAprobado(g.aprobado || 'Aprobado');
+    setDeletedGroupItemIds([]);
+    
+    // Map items so we can edit each of them in-memory
+    setEditGroupItems(g.items.map((item: any) => ({
+      id: item.id,
+      articulo_id: item.articulo_id,
+      articulo_codigo: item.articulo_codigo,
+      articulo_nombre: item.articulo_nombre,
+      cantidad: item.cantidad || 1,
+      precio_venta: item.total || 0, // total in db
+    })));
+    setEditGroupError('');
+  };
+
+  const handleSaveGroupEditSaleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingGroup) return;
+    setEditGroupIsSubmitting(true);
+    setEditGroupError('');
+    try {
+      // 1. Delete items that were removed in the UI
+      for (const idToDelete of deletedGroupItemIds) {
+        const delRes = await fetch(`/api/ventas/${idToDelete}`, {
+          method: 'DELETE'
+        });
+        if (!delRes.ok) {
+          const errorData = await delRes.json();
+          throw new Error(errorData.error || `Error al eliminar artículo de la venta.`);
+        }
+      }
+
+      // 2. Loop through remaining items to update them
+      for (let i = 0; i < editGroupItems.length; i++) {
+        const item = editGroupItems[i];
+        // Attribute global shipping cost entirely to the first line item to prevent multi-counting
+        const itemCostoEnvio = i === 0 ? Number(editGroupCostoEnvio) : 0;
+        
+        const res = await fetch(`/api/ventas/${item.id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            cliente: editGroupCliente,
+            articulo_id: item.articulo_id,
+            cantidad: Number(item.cantidad),
+            sucursal: editGroupSucursal,
+            canal: editGroupCanal,
+            precio_venta: Number(item.precio_venta),
+            costo_envio: itemCostoEnvio,
+            aprobado: editGroupAprobado,
+            fecha: editGroupFecha ? new Date(editGroupFecha).toISOString() : undefined
+          })
+        });
+
+        if (!res.ok) {
+          const errorData = await res.json();
+          throw new Error(errorData.error || `Error al actualizar el artículo ${item.articulo_nombre || item.id}`);
+        }
+      }
+
+      setEditingGroup(null);
+      await refreshSystemData();
+    } catch (err: any) {
+      console.error(err);
+      setEditGroupError(err.message || 'Error de conexión al servidor.');
+    } finally {
+      setEditGroupIsSubmitting(false);
+    }
+  };
+
   const handleStartEditSale = (sale: Sale) => {
     setEditingSale(sale);
     setEditClient(sale.cliente || '');
@@ -880,10 +991,10 @@ export default function App() {
     usuario: sessionUser?.usuario || 'Uriel',
     detalles: [] as any[],
 
-    // Auto toggles
-    actualizar_stock: true,
-    actualizar_costos: true,
-    actualizar_precio_sugerido: true,
+    // Auto toggles - defaulted to false per user request
+    actualizar_stock: false,
+    actualizar_costos: false,
+    actualizar_precio_sugerido: false,
     registrar_auditoria: true
   });
 
@@ -1017,6 +1128,7 @@ export default function App() {
   // Single detail line item composer state
   const [repDetailComposer, setRepDetailComposer] = useState({
     articulo_id: '',
+    nombre: '',
     cantidad: 1,
     costo_unitario: '' as string | number,
     precio_sugerido: '' as string | number,
@@ -1042,6 +1154,7 @@ export default function App() {
 
   const [repError, setRepError] = useState('');
   const [repSuccess, setRepSuccess] = useState('');
+  const [repStep, setRepStep] = useState<number>(1);
 
   // Confirmation modal state for Reposicion deletions
   const [repToDelete, setRepToDelete] = useState<any | null>(null);
@@ -1818,20 +1931,20 @@ export default function App() {
   // ADVANCED REPOSICIONES EVENT HANDLERS
   const handleAddRepDetailItem = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!repDetailComposer.articulo_id) {
-       setRepError("Por favor selecciona un producto para añadir al detalle.");
-       return;
-    }
-    const artId = Number(repDetailComposer.articulo_id);
-    const item = catalog.find(a => a.id === artId);
-    if (!item) {
-       setRepError("Producto no encontrado en el catálogo central.");
+    const typedName = repDetailComposer.nombre.trim();
+    if (!typedName) {
+       setRepError("Por favor escribe el título del artículo.");
        return;
     }
 
+    const matchedItem = catalog.find(a => a.nombre.toLowerCase() === typedName.toLowerCase());
+    const artId = matchedItem ? matchedItem.id : 0;
+    const itemCode = matchedItem ? matchedItem.codigo : 'S/C';
+    const finalName = matchedItem ? matchedItem.nombre : typedName;
+
     const qty = Number(repDetailComposer.cantidad);
     const rawCost = Number(repDetailComposer.costo_unitario);
-    const sugg = Number(repDetailComposer.precio_sugerido || item.precio_venta || item.precio_venta_ml || 0);
+    const sugg = Number(repDetailComposer.precio_sugerido || (matchedItem ? (matchedItem.precio_venta || matchedItem.precio_venta_ml || 0) : 0));
 
     if (qty <= 0) {
       setRepError("La cantidad debe ser mayor que 0.");
@@ -1876,8 +1989,8 @@ export default function App() {
       }
     }
 
-    // Check if item is already in details
-    const existingIdx = repForm.detalles.findIndex(d => Number(d.articulo_id) === artId);
+    // Check if item with same name already is in details
+    const existingIdx = repForm.detalles.findIndex(d => d.nombre.toLowerCase() === finalName.toLowerCase());
     let updatedDetalles = [...repForm.detalles];
 
     if (existingIdx !== -1) {
@@ -1891,8 +2004,8 @@ export default function App() {
     } else {
       updatedDetalles.push({
         articulo_id: artId,
-        codigo: item.codigo,
-        nombre: item.nombre,
+        codigo: itemCode,
+        nombre: finalName,
         cantidad: qty,
         costo_unitario: costNeto, // store Net Cost in database catalog
         tipo_iva: tipoIvaVal,
@@ -1918,6 +2031,7 @@ export default function App() {
     // Reset composer line items but keep previous cost and settings as helpful default
     setRepDetailComposer(prev => ({
       articulo_id: '',
+      nombre: '',
       cantidad: 1,
       costo_unitario: prev.costo_unitario,
       precio_sugerido: '' as string | number,
@@ -2005,7 +2119,7 @@ export default function App() {
       });
 
       if (res.ok) {
-        setRepSuccess(isEditingRep ? "¡Reposición modificada y stock ajustado exitosamente!" : "¡Reposición de mercadería registrada con éxito!");
+        setRepSuccess(isEditingRep ? "¡Factura modificada exitosamente!" : "¡Factura de proveedor registrada con éxito!");
 
         // Reset form
         setRepForm({
@@ -2017,15 +2131,16 @@ export default function App() {
           observaciones: '',
           usuario: sessionUser?.usuario || 'Uriel',
           detalles: [],
-          actualizar_stock: true,
-          actualizar_costos: true,
-          actualizar_precio_sugerido: true,
+          actualizar_stock: false,
+          actualizar_costos: false,
+          actualizar_precio_sugerido: false,
           registrar_auditoria: true
         });
         setIsEditingRep(false);
         setEditingRepId(null);
         setRepSearchText('');
         setRepSelectorFocused(false);
+        setRepStep(1);
         await refreshSystemData();
         setTimeout(() => setRepSuccess(''), 5000);
       } else {
@@ -2126,9 +2241,9 @@ export default function App() {
       observaciones: rep.observaciones || '',
       usuario: rep.usuario || 'Uriel',
       detalles: rep.detalles || [],
-      actualizar_stock: true,
-      actualizar_costos: true,
-      actualizar_precio_sugerido: true,
+      actualizar_stock: false,
+      actualizar_costos: false,
+      actualizar_precio_sugerido: false,
       registrar_auditoria: true
     });
     setRepSearchText('');
@@ -2982,7 +3097,7 @@ export default function App() {
                 >
                   <div className="flex items-center gap-3">
                     <LayoutDashboard className="w-4 h-4 shrink-0" />
-                    <span>Cuadro de Mando</span>
+                    <span>Resumen General</span>
                   </div>
                   {(() => {
                     const negativeStockCount = catalog.filter(art => 
@@ -3059,7 +3174,7 @@ export default function App() {
                   }`}
                 >
                   <PlusCircle className="w-4 h-4 shrink-0" />
-                  <span>Ingreso de Stock</span>
+                  <span>Ingreso de Factura</span>
                 </button>
               )}
 
@@ -3676,7 +3791,9 @@ export default function App() {
           const billingMonthTotalCombined = salesThisMonth.reduce((sum, s) => sum + Number(s.total || 0), 0);
 
           const gastosThisMonth = gastos.filter(g => g.fecha && g.fecha.substring(0, 7) === currentYearMonth);
-          const expensesMonthTotalCombined = gastosThisMonth.reduce((sum, g) => sum + Number(g.monto || 0), 0);
+          const reposicionesThisMonth = reposiciones.filter(r => r.fecha && r.fecha.substring(0, 7) === currentYearMonth);
+          const reposMonthTotalCombined = reposicionesThisMonth.reduce((sum, r) => sum + Number(r.total_factura || 0), 0);
+          const expensesMonthTotalCombined = gastosThisMonth.reduce((sum, g) => sum + Number(g.monto || 0), 0) + reposMonthTotalCombined;
 
           // Get cost of goods sold (COGS) this month
           const totalCogsThisMonth = salesThisMonth.reduce((sum, s) => {
@@ -3840,7 +3957,7 @@ export default function App() {
                 <div className="flex items-center gap-3">
                   <LayoutDashboard className="w-5 h-5 text-indigo-400 shrink-0" />
                   <div>
-                    <h2 className="text-sm font-bold tracking-tight">CUADRO DE MANDO INTELIGENTE</h2>
+                    <h2 className="text-sm font-bold tracking-tight">RESUMEN GENERAL DEL NEGOCIO</h2>
                     <p className="text-[10px] text-indigo-300 font-mono">Control de Gestión e Inteligencia Comercial</p>
                   </div>
                 </div>
@@ -3939,182 +4056,737 @@ export default function App() {
               })()}
 
               {/* SUB-TAB 1: SUMMARY (DASHBOARD GERENCIAL) */}
-              {mandoSubTab === 'summary' && (
-                <div className="space-y-6">
-                  {/* Financial KPI Dashboard Widgets */}
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-                    <div className="bg-white p-5 rounded-2xl border border-slate-200/90 shadow-2xs">
-                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">VENTAS DE HOY</span>
-                      <p className="text-2xl font-mono font-extrabold text-slate-900 mt-1">${billingTodayTotal.toLocaleString()}</p>
-                      <div className="text-[10px] text-indigo-600 font-semibold flex items-center gap-1 mt-1.5 font-sans">
-                        <Check className="w-3 h-3 text-emerald-500" />
-                        <span>{salesToday.length} pedidos hoy</span>
+              {mandoSubTab === 'summary' && (() => {
+                // --- CUSTOM CALCULATIONS FOR THE REDESIGNED DASHBOARD ---
+                const totalCogsToday = salesToday.reduce((sum, s) => {
+                  const art = catalog.find(x => x.id === s.articulo_id);
+                  const unitCost = s.precio_compra !== undefined ? Number(s.precio_compra) : (art ? Number(art.costo || 0) : 0);
+                  return sum + (unitCost * Number(s.cantidad || 1));
+                }, 0);
+                const totalCommissionsToday = salesToday.reduce((sum, s) => sum + Number(s.comision_ml || 0), 0);
+                const totalShippingToday = salesToday.reduce((sum, s) => sum + Number(s.costo_envio || 0), 0);
+                const realProfitToday = billingTodayTotal - totalCogsToday - totalCommissionsToday - totalShippingToday;
+
+                const totalCajaActual = finanzasCuentas.reduce((sum, c) => sum + Number(c.saldo || 0), 0);
+                const cajaChicaActual = finanzasCuentas.find(c => c.nombre.toLowerCase().includes('caja'))?.saldo || 0;
+
+                const ticketsToday = salesToday.length;
+                const ticketsMonth = salesThisMonth.length;
+                const ticketPromedioToday = ticketsToday > 0 ? (billingTodayTotal / ticketsToday) : 0;
+                const ticketPromedioMonth = ticketsMonth > 0 ? (billingMonthTotalCombined / ticketsMonth) : 0;
+                const averageMarginPctMonth = billingMonthTotalCombined > 0 ? (realProfitThisMonth / billingMonthTotalCombined) * 100 : 0;
+
+                const excessStockList = catalog.filter(art => art.tipo === 'simple' && ((art.mvd_stock || 0) + (art.pin_stock || 0) >= 50));
+                const totalInventoryValue = catalog.filter(art => art.tipo === 'simple').reduce((sum, art) => {
+                  const stockMvd = art.mvd_stock || 0;
+                  const stockPin = art.pin_stock || 0;
+                  const cost = Number(art.costo || 0);
+                  return sum + (cost * (stockMvd + stockPin));
+                }, 0);
+
+                const productsNoPrice = catalog.filter(art => art.tipo === 'simple' && (!art.precio_venta || Number(art.precio_venta) <= 0));
+                const arqueosWithDiscrepancy = arqueosList.filter(a => Number(a.diferencia || 0) !== 0);
+                const negativeMarginProducts = catalog.filter(art => {
+                  const cost = Number(art.costo || 0);
+                  const price = Number(art.precio_venta || 0);
+                  return price > 0 && price <= cost;
+                });
+                const mlActiveOutOfStock = catalog.filter(art => {
+                  if (art.tipo !== 'simple') return false;
+                  const priceMl = Number(art.precio_venta_ml || 0);
+                  const totalStock = (art.mvd_stock || 0) + (art.pin_stock || 0);
+                  return priceMl > 0 && totalStock <= 0;
+                });
+                const highDemandCount = topProducts.filter(p => p.qty >= 5).length;
+
+                const pendingInvoices = finanzasMovimientos.filter(m => m.tipo === 'pendiente_pago' && m.estado === 'pendiente');
+                const pendingInvoicesSum = pendingInvoices.reduce((sum, m) => sum + Number(m.monto || 0), 0);
+                const overdueInvoices = pendingInvoices.filter(m => m.vencimiento && new Date(m.vencimiento) < new Date());
+                const upcomingDueBills = pendingInvoices.slice(0, 5);
+                const mvdGains = mvdSales.reduce((sum, s) => {
+                  const art = catalog.find(x => x.id === s.articulo_id);
+                  const cost = art ? Number(art.costo || 0) : 0;
+                  return sum + (Number(s.total || 0) - (cost * Number(s.cantidad || 1)));
+                }, 0);
+                const pinGains = pinSales.reduce((sum, s) => {
+                  const art = catalog.find(x => x.id === s.articulo_id);
+                  const cost = art ? Number(art.costo || 0) : 0;
+                  return sum + (Number(s.total || 0) - (cost * Number(s.cantidad || 1)));
+                }, 0);
+                const bestBranchThisMonth = mvdSalesTotal >= pinSalesTotal ? 'Montevideo' : 'Pinamar';
+
+                // Top profit products
+                const productsProfit = Object.values(productsSold).map(p => {
+                  const art = catalog.find(x => x.id === p.id);
+                  const cost = art ? Number(art.costo || 0) : 0;
+                  const totalCostOfProductSold = cost * p.qty;
+                  const totalProfit = p.total - totalCostOfProductSold;
+                  return { ...p, profit: totalProfit };
+                }).sort((a,b) => b.profit - a.profit).slice(0, 5);
+
+                // Combos más vendidos
+                const combosThisMonthMap: Record<number, { id: number; nombre: string; codigo: string; qty: number; total: number; imagen?: string }> = {};
+                salesThisMonth.forEach(s => {
+                  const art = catalog.find(x => x.id === s.articulo_id);
+                  if (art && art.tipo === 'combo') {
+                    if (!combosThisMonthMap[s.articulo_id]) {
+                      combosThisMonthMap[s.articulo_id] = { id: s.articulo_id, nombre: s.articulo_nombre || 'Combo Compound', codigo: s.articulo_codigo || '', qty: 0, total: 0, imagen: art.imagen_url };
+                    }
+                    combosThisMonthMap[s.articulo_id].qty += Number(s.cantidad || 0);
+                    combosThisMonthMap[s.articulo_id].total += Number(s.total || 0);
+                  }
+                });
+                const topCombos = Object.values(combosThisMonthMap).sort((a, b) => b.qty - a.qty).slice(0, 5);
+
+                // Active alerts
+                const activeAlertsList: Array<{ id: string; level: 'critical' | 'warning' | 'info'; title: string; desc: string }> = [];
+                if (outOfStockList.length > 0) {
+                  activeAlertsList.push({
+                    id: 'out_of_stock',
+                    level: 'critical',
+                    title: 'Productos Agotados',
+                    desc: `Hay ${outOfStockList.length} productos sin stock en el depósito.`
+                  });
+                }
+                if (criticalStockRange.length > 0) {
+                  activeAlertsList.push({
+                    id: 'critical_stock',
+                    level: 'critical',
+                    title: 'Stock Crítico Activo',
+                    desc: `${criticalStockRange.length} artículos con stock positivo pero por debajo del límite crítico.`
+                  });
+                }
+                if (overdueInvoices.length > 0) {
+                  activeAlertsList.push({
+                    id: 'overdue_invoice',
+                    level: 'critical',
+                    title: 'Facturas de Compra Vencidas',
+                    desc: `Tienes ${overdueInvoices.length} facturas de proveedores con fecha expirada.`
+                  });
+                }
+                if (negativeMarginProducts.length > 0) {
+                  activeAlertsList.push({
+                    id: 'negative_margin',
+                    level: 'critical',
+                    title: 'Márgenes de Venta Negativos',
+                    desc: `Hay ${negativeMarginProducts.length} productos cuyo precio de venta es inferior al costo.`
+                  });
+                }
+                if (productsNoPrice.length > 0) {
+                  activeAlertsList.push({
+                    id: 'no_price',
+                    level: 'warning',
+                    title: 'Productos sin Precio asignado',
+                    desc: `Hay ${productsNoPrice.length} artículos publicados o creados con precio de venta en $0.`
+                  });
+                }
+                if (arqueosWithDiscrepancy.length > 0) {
+                  activeAlertsList.push({
+                    id: 'caja_diff',
+                    level: 'warning',
+                    title: 'Diferencias en Arqueo de Caja',
+                    desc: `Se registraron ${arqueosWithDiscrepancy.length} arqueos con descuadres o diferencias.`
+                  });
+                }
+                if (mlActiveOutOfStock.length > 0) {
+                  activeAlertsList.push({
+                    id: 'ml_no_stock',
+                    level: 'warning',
+                    title: 'Publicados sin Stock en Web/ML',
+                    desc: `Hay ${mlActiveOutOfStock.length} artículos con precio de ML pero stock real en cero.`
+                  });
+                }
+                if (highDemandCount > 0) {
+                  activeAlertsList.push({
+                    id: 'high_demand',
+                    level: 'info',
+                    title: 'Artículos con Alta Demanda',
+                    desc: `${highDemandCount} productos tienen alta rotación este mes.`
+                  });
+                }
+
+                // Recent Activities lists
+                const latestSalesForList = [...sales].sort((a,b) => new Date(b.fecha).getTime() - new Date(a.fecha).getTime()).slice(0, 5);
+                const latestPurchasesForList = [...reposiciones].sort((a,b) => new Date(b.fecha).getTime() - new Date(a.fecha).getTime()).slice(0, 5);
+                const latestTransfersForList = [...trasladosList].sort((a,b) => new Date(b.fecha).getTime() - new Date(a.fecha).getTime()).slice(0, 5);
+                const latestCashMovsForList = [...finanzasMovimientos].sort((a,b) => new Date(b.fecha || Date.now()).getTime() - new Date(a.fecha || Date.now()).getTime()).slice(0, 5);
+
+                // SVG Chart calculations
+                const last7DaysData = Array.from({ length: 7 }, (_, i) => {
+                  const d = new Date();
+                  d.setDate(d.getDate() - (6 - i));
+                  const dateStr = d.toISOString().split('T')[0];
+                  const dayName = d.toLocaleDateString('es-UY', { weekday: 'short' });
+                  const daySales = filteredMandoSales.filter(s => s.fecha && s.fecha.split('T')[0] === dateStr);
+                  const total = daySales.reduce((sum, s) => sum + Number(s.total || 0), 0);
+                  return { dateStr, dayName, total };
+                });
+                const maxSalesVal = Math.max(...last7DaysData.map(d => d.total), 1000);
+
+                return (
+                  <div className="space-y-6">
+                    {/* TOP 5 METRICAS CRITICAS (5-Second business snapshot) */}
+                    <div className="bg-slate-900 border border-slate-800 p-4 rounded-3xl shadow-xl">
+                      <div className="flex items-center justify-between border-b border-slate-800 pb-3 mb-4">
+                        <div className="flex items-center gap-2">
+                          <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                          <span className="text-[10px] font-black uppercase text-slate-400 tracking-wider">Foto Rápida del Negocio</span>
+                        </div>
+                        <span className="text-[10px] font-mono font-bold text-indigo-400 uppercase bg-indigo-950/50 px-2 py-0.5 rounded-md">Monitoreo Real-time</span>
+                      </div>
+                      
+                      <div className="grid grid-cols-2 md:grid-cols-5 gap-3.5">
+                        {/* 1. Ventas hoy */}
+                        <div className="bg-slate-950/50 p-3.5 rounded-2xl border border-slate-800/80">
+                          <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest block">VENTAS DE HOY</span>
+                          <p className="text-xl font-mono font-black text-white mt-1">${billingTodayTotal.toLocaleString()}</p>
+                          <span className="text-[9px] text-emerald-400 font-bold mt-1 block">
+                            {ticketsToday} {ticketsToday === 1 ? 'ticket vendido' : 'tickets vendidos'}
+                          </span>
+                        </div>
+
+                        {/* 2. Ganancia real hoy */}
+                        <div className="bg-slate-950/50 p-3.5 rounded-2xl border border-slate-800/80">
+                          <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest block">GANANCIA REAL</span>
+                          <p className={`text-xl font-mono font-black mt-1 ${realProfitToday >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                            ${Math.round(realProfitToday).toLocaleString()}
+                          </p>
+                          <span className="text-[9px] text-slate-400 block mt-1">Deduciendo costos hoy</span>
+                        </div>
+
+                        {/* 3. Ventas del mes */}
+                        <div className="bg-slate-950/50 p-3.5 rounded-2xl border border-slate-800/80">
+                          <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest block">VENTAS DEL MES</span>
+                          <p className="text-xl font-mono font-black text-amber-400 mt-1">${billingMonthTotalCombined.toLocaleString()}</p>
+                          <span className="text-[9px] text-indigo-300 font-semibold block mt-1">{salesThisMonth.length} pedidos este mes</span>
+                        </div>
+
+                        {/* 4. Stock crítico */}
+                        <div className="bg-slate-950/50 p-3.5 rounded-2xl border border-slate-800/80">
+                          <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest block">STOCK CRÍTICO</span>
+                          <p className={`text-xl font-mono font-black mt-1 ${criticalStockRange.length > 0 ? 'text-rose-400 animate-pulse' : 'text-slate-300'}`}>
+                            {criticalStockRange.length} {criticalStockRange.length === 1 ? 'prod.' : 'prods.'}
+                          </p>
+                          <span className="text-[9px] text-slate-400 block mt-1">Requiere reposición</span>
+                        </div>
+
+                        {/* 5. Alertas inteligentes */}
+                        <div className="bg-slate-950/50 p-3.5 rounded-2xl border border-slate-800/80 col-span-2 md:col-span-1">
+                          <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest block">ALERTAS IA</span>
+                          <p className={`text-xl font-mono font-black mt-1 ${activeAlertsList.length > 0 ? 'text-amber-400' : 'text-emerald-400'}`}>
+                            {activeAlertsList.length} activas
+                          </p>
+                          <span className="text-[9px] text-slate-400 block mt-1">Atención inmediata</span>
+                        </div>
                       </div>
                     </div>
 
-                    <div className="bg-white p-5 rounded-2xl border border-slate-200/90 shadow-2xs">
-                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">FACTURACIÓN DEL MES</span>
-                      <p className="text-2xl font-mono font-extrabold text-slate-900 mt-1">${billingMonthTotalCombined.toLocaleString()}</p>
-                      <div className="text-[10px] text-slate-450 flex items-center gap-1 mt-1.5">
-                        <Calendar className="w-3.5 h-3.5 text-slate-405" />
-                        <span>{salesThisMonth.length} transacciones este mes</span>
-                      </div>
-                    </div>
-
-                    <div className="bg-white p-5 rounded-2xl border border-slate-200/90 shadow-2xs">
-                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">GASTOS OPERATIVOS MES</span>
-                      <p className="text-2xl font-mono font-extrabold text-red-650 mt-1">${expensesMonthTotalCombined.toLocaleString()}</p>
-                      <div className="text-[10px] text-red-500 font-semibold flex items-center gap-1 mt-1.5">
-                        <TrendingDown className="w-3.5 h-3.5" />
-                        <span>{gastosThisMonth.length} egresos operacionales</span>
-                      </div>
-                    </div>
-
-                    <div className="bg-white p-5 rounded-2xl border border-slate-200/95 shadow-2xs bg-gradient-to-br from-indigo-50/20 to-white">
-                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">GANANCIA REAL DEL MES</span>
-                      <p className={`text-2xl font-mono font-extrabold mt-1 ${realProfitThisMonth >= 0 ? 'text-emerald-600' : 'text-red-550'}`}>
-                        ${Math.round(realProfitThisMonth).toLocaleString()}
-                      </p>
-                      <div className="text-[10px] flex items-center gap-1 mt-1.5 font-semibold text-slate-500">
-                        <span className="text-emerald-500">★</span>
-                        <span>Márgenes reales descontando COGS</span>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Branch & Best Selling Side-by-Side Panel */}
-                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                    {/* Branch Comparison Montevideo vs Pinamar */}
-                    <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-xs space-y-4">
-                      <div className="flex items-center justify-between border-b border-slate-100 pb-2">
-                        <h3 className="text-xs font-bold uppercase tracking-wider text-slate-700">Suma de Esfuerzos: Montevideo & Pinamar</h3>
-                        <span className="text-[10px] bg-indigo-55 text-indigo-700 px-2 py-0.5 rounded-md font-semibold font-mono">Mes Actual</span>
-                      </div>
-
-                      <div className="space-y-4">
-                        {/* Montevideo Stats */}
-                        <div className="space-y-1.5">
-                          <div className="flex items-center justify-between text-xs">
-                            <span className="font-extrabold text-slate-900">Montevideo Depot</span>
-                            <span className="font-mono font-black text-slate-705">${mvdSalesTotal.toLocaleString()} ({mvdPercent}%)</span>
+                    {/* FILA 1: VISIÓN RÁPIDA */}
+                    <div>
+                      <h4 className="text-xs font-extrabold uppercase tracking-widest text-slate-400 mb-2.5 flex items-center gap-1.5">
+                        <span className="w-1.5 h-1.5 bg-indigo-500 rounded-full"></span>
+                        Fila 1: Visión Rápida
+                      </h4>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                        {/* Ventas Hoy */}
+                        <div className="bg-white p-5 rounded-2xl border border-slate-200/95 shadow-2xs">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">VENTAS HOY</span>
+                            <span className="text-[10px] text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded font-black">HOY</span>
                           </div>
-                          <div className="w-full bg-slate-100 h-2.5 rounded-full overflow-hidden">
-                            <div className="bg-slate-800 h-full rounded-full transition-all animate-none" style={{ width: `${mvdPercent}%` }}></div>
-                          </div>
-                          <div className="flex justify-between text-[10px] text-slate-400 font-mono">
-                            <span>Unidades vendidas: {mvdUnitsSold} u.</span>
-                            <span>Stock actual simple: {totalStockMvd} u.</span>
+                          <p className="text-2xl font-mono font-extrabold text-slate-900 mt-1.5">${billingTodayTotal.toLocaleString()}</p>
+                          <div className="text-[10px] text-slate-450 mt-1.5 flex items-center justify-between">
+                            <span>Promedio/Ped: ${Math.round(ticketPromedioToday).toLocaleString()}</span>
+                            <span className="font-bold text-slate-600">{ticketsToday} u. vendidos</span>
                           </div>
                         </div>
 
-                        {/* Pinamar Stats */}
-                        <div className="space-y-1.5 pt-1">
-                          <div className="flex items-center justify-between text-xs">
-                            <span className="font-extrabold text-indigo-700">Pinamar Depot</span>
-                            <span className="font-mono font-black text-indigo-700">${pinSalesTotal.toLocaleString()} ({pinPercent}%)</span>
+                        {/* Ganancia Hoy */}
+                        <div className="bg-white p-5 rounded-2xl border border-slate-200/95 shadow-2xs">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">GANANCIA HOY</span>
+                            <span className={`text-[10px] px-2 py-0.5 rounded font-black ${realProfitToday >= 0 ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700'}`}>
+                              {realProfitToday >= 0 ? 'NETO' : 'REGLA'}
+                            </span>
                           </div>
-                          <div className="w-full bg-slate-100 h-2.5 rounded-full overflow-hidden">
-                            <div className="bg-indigo-650 h-full rounded-full transition-all animate-none" style={{ width: `${pinPercent}%` }}></div>
+                          <p className={`text-2xl font-mono font-extrabold mt-1.5 ${realProfitToday >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>
+                            ${Math.round(realProfitToday).toLocaleString()}
+                          </p>
+                          <div className="text-[10px] text-slate-400 mt-1.5">
+                            Margen estimado hoy: {billingTodayTotal > 0 ? Math.round((realProfitToday / billingTodayTotal) * 100) : 0}%
                           </div>
-                          <div className="flex justify-between text-[10px] text-slate-400 font-mono">
-                            <span>Unidades vendidas: {pinUnitsSold} u.</span>
-                            <span>Stock actual simple: {totalStockPin} u.</span>
+                        </div>
+
+                        {/* Ventas del mes */}
+                        <div className="bg-white p-5 rounded-2xl border border-slate-200/95 shadow-2xs">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">VENTAS DEL MES</span>
+                            <span className="text-[10px] text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded font-black font-mono">MES</span>
+                          </div>
+                          <p className="text-2xl font-mono font-extrabold text-slate-900 mt-1.5">${billingMonthTotalCombined.toLocaleString()}</p>
+                          <div className="text-[10px] text-slate-450 mt-1.5 flex justify-between">
+                            <span>Total pedidos: {ticketsMonth} u.</span>
+                            <span className="text-indigo-600 font-semibold cursor-pointer underline" onClick={() => setMandoSubTab('rentabilidad')}>Detalle →</span>
+                          </div>
+                        </div>
+
+                        {/* Stock Crítico */}
+                        <div className="bg-white p-5 rounded-2xl border border-slate-200/95 shadow-2xs">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">STOCK CRÍTICO</span>
+                            <span className={`text-[10px] px-2 py-0.5 rounded font-black ${criticalStockRange.length > 0 ? 'bg-rose-50 text-rose-700 animate-pulse' : 'bg-emerald-50 text-emerald-700'}`}>
+                              {criticalStockRange.length > 0 ? 'COMPRA' : 'ÓPTIMO'}
+                            </span>
+                          </div>
+                          <p className="text-2xl font-mono font-extrabold text-slate-900 mt-1.5">{criticalStockRange.length} SKUs</p>
+                          <div className="text-[10px] text-slate-450 mt-1.5 flex justify-between">
+                            <span>Agotados: {outOfStockList.length} prod.</span>
+                            <span className="text-rose-550 font-bold uppercase tracking-wider">Límite: {criticalStockLimit} u.</span>
                           </div>
                         </div>
                       </div>
+                    </div>
 
-                      <div className="bg-indigo-50/40 p-3 rounded-xl border border-indigo-100/50 text-[11px] text-slate-600 leading-relaxed font-sans mt-2">
-                        Ambas sucursales forman una poderosa sinergia, logrando una facturación consolidada de <strong>${(mvdSalesTotal + pinSalesTotal).toLocaleString()}</strong> este mes en perfecta coordinación operativa.
+                    {/* FILA 2: VISIÓN NEGOCIO */}
+                    <div>
+                      <h4 className="text-xs font-extrabold uppercase tracking-widest text-slate-400 mb-2.5 flex items-center gap-1.5">
+                        <span className="w-1.5 h-1.5 bg-indigo-500 rounded-full"></span>
+                        Fila 2: Visión del Negocio (Mensual)
+                      </h4>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                        {/* Caja Actual */}
+                        <div className="bg-white p-5 rounded-2xl border border-slate-200/95 shadow-2xs">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">CAJA ACTUAL</span>
+                            <span className="text-[10px] text-amber-700 bg-amber-50 px-2 py-0.5 rounded font-black font-mono">TESORO</span>
+                          </div>
+                          <p className="text-2xl font-mono font-extrabold text-slate-900 mt-1.5">${totalCajaActual.toLocaleString()}</p>
+                          <div className="text-[10px] text-slate-450 mt-1.5 flex justify-between">
+                            <span>Mostrador: ${cajaChicaActual.toLocaleString()}</span>
+                            <span className="text-indigo-650 font-semibold cursor-pointer underline" onClick={() => setActiveTab('finanzas')}>Arqueo →</span>
+                          </div>
+                        </div>
+
+                        {/* Gastos del mes */}
+                        <div className="bg-white p-5 rounded-2xl border border-slate-200/95 shadow-2xs">
+                          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">GASTOS Y COMPRAS DEL MES</span>
+                          <p className="text-2xl font-mono font-extrabold text-red-650 mt-1.5">${expensesMonthTotalCombined.toLocaleString()}</p>
+                          <div className="text-[10px] text-red-500 font-semibold mt-1.5 flex justify-between">
+                            <span>Gastos fijos + reposiciones</span>
+                            <span>{gastosThisMonth.length + reposicionesThisMonth.length} boletas</span>
+                          </div>
+                        </div>
+
+                        {/* Ganancia neta del mes */}
+                        <div className="bg-white p-5 rounded-2xl border border-slate-200/95 shadow-2xs bg-gradient-to-br from-indigo-50/10 to-white">
+                          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">GANANCIA NETO ESTIMADA</span>
+                          <p className={`text-2xl font-mono font-extrabold mt-1.5 ${realProfitThisMonth >= 0 ? 'text-emerald-600' : 'text-red-550'}`}>
+                            ${Math.round(realProfitThisMonth).toLocaleString()}
+                          </p>
+                          <div className="text-[10px] text-slate-400 mt-1.5">
+                            Deduciendo COGS, fletes y comisiones ML
+                          </div>
+                        </div>
+
+                        {/* Ticket promedio */}
+                        <div className="bg-white p-5 rounded-2xl border border-slate-200/95 shadow-2xs">
+                          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">TICKET PROMEDIO / MARGEN</span>
+                          <p className="text-2xl font-mono font-extrabold text-slate-900 mt-1.5">${Math.round(ticketPromedioMonth).toLocaleString()}</p>
+                          <div className="text-[10px] mt-1.5 text-slate-500 font-bold flex justify-between">
+                            <span>Margen prom: {Math.round(averageMarginPctMonth)}%</span>
+                            <span className="text-emerald-600">{(averageMarginPctMonth >= 30) ? '★ Saludable' : '▲ Optimizar'}</span>
+                          </div>
+                        </div>
                       </div>
                     </div>
 
-                    {/* Products Best Sellers */}
-                    <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-xs space-y-4">
-                      <div className="flex items-center justify-between border-b border-slate-100 pb-2">
-                        <h3 className="text-xs font-bold uppercase tracking-wider text-slate-700">Productos Más Vendidos</h3>
-                        <span className="text-[10px] bg-emerald-50 text-emerald-800 px-2 py-0.5 rounded-md font-semibold">Top 5</span>
-                      </div>
-
-                      <div className="divide-y divide-slate-100">
-                        {topProducts.length === 0 ? (
-                          <div className="py-12 text-center text-xs text-slate-450 font-mono">
-                            No se registran ventas para clasificar en el mes actual.
+                    {/* FILA 3: OPERATIVA (BENTO GRID) */}
+                    <div>
+                      <h4 className="text-xs font-extrabold uppercase tracking-widest text-slate-400 mb-2.5 flex items-center gap-1.5">
+                        <span className="w-1.5 h-1.5 bg-indigo-500 rounded-full"></span>
+                        Fila 3: Operativa del Día
+                      </h4>
+                      
+                      <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
+                        {/* 1. Top Productos */}
+                        <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-2xs space-y-3.5 lg:col-span-1">
+                          <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+                            <span className="text-[10px] font-extrabold text-slate-500 uppercase tracking-wider">Top Productos Vendidos</span>
+                            <span className="text-[9px] bg-indigo-50 text-indigo-700 px-1.5 py-0.5 rounded font-bold">Unidades</span>
                           </div>
-                        ) : (
-                          topProducts.map((p, idx) => (
-                            <div key={p.id} className="flex items-center justify-between py-2.5 first:pt-0 last:pb-0">
-                              <div className="flex items-center gap-3">
-                                <span className="font-mono font-black text-xs text-slate-350 w-4">#{idx+1}</span>
-                                {p.imagen ? (
-                                  <img src={p.imagen} alt={p.nombre} className="w-8 h-8 rounded-lg object-cover border border-slate-100" />
-                                ) : (
-                                  <div className="w-8 h-8 rounded-lg bg-slate-50 border border-slate-100 flex items-center justify-center text-slate-400 text-[9px] font-bold">SKU</div>
-                                )}
-                                <div className="max-w-[180px] sm:max-w-xs">
-                                  <h4 className="text-xs font-bold text-slate-900 line-clamp-1">{p.nombre}</h4>
-                                  <span className="text-[10px] font-mono text-slate-400">{p.codigo}</span>
+                          <div className="divide-y divide-slate-100 max-h-[260px] overflow-y-auto pr-1">
+                            {topProducts.length === 0 ? (
+                              <p className="text-[11px] text-slate-400 py-10 text-center font-mono">Sin datos de venta este mes.</p>
+                            ) : (
+                              topProducts.map((p, idx) => (
+                                <div key={`top_p_${p.id}`} className="flex items-center justify-between py-2 first:pt-0 last:pb-0 text-xs">
+                                  <div className="flex items-center gap-2 max-w-[150px]">
+                                    <span className="font-mono text-[10px] text-slate-300 font-bold">#{idx+1}</span>
+                                    <div className="truncate">
+                                      <p className="font-semibold text-slate-900 truncate">{p.nombre}</p>
+                                      <span className="text-[9px] font-mono text-slate-400">{p.codigo}</span>
+                                    </div>
+                                  </div>
+                                  <div className="text-right font-mono font-bold shrink-0">
+                                    <span className="text-slate-900">{p.qty} u.</span>
+                                    <span className="text-[9px] text-slate-400 block">${p.total.toLocaleString()}</span>
+                                  </div>
                                 </div>
+                              ))
+                            )}
+                          </div>
+                        </div>
+
+                        {/* 2. Alertas Inteligentes List */}
+                        <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-2xs space-y-3.5 lg:col-span-1">
+                          <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+                            <span className="text-[10px] font-extrabold text-slate-500 uppercase tracking-wider">Alertas Activas</span>
+                            <span className="text-[9px] bg-amber-50 text-amber-700 px-1.5 py-0.5 rounded font-bold">{activeAlertsList.length}</span>
+                          </div>
+                          <div className="space-y-2 max-h-[260px] overflow-y-auto pr-1">
+                            {activeAlertsList.length === 0 ? (
+                              <div className="py-12 text-center text-slate-400 text-[11px]">
+                                <span className="text-emerald-500 font-bold block mb-1">✓ Sistema Saludable</span>
+                                No hay alertas críticas de stock o precios pendientes.
                               </div>
-                              <div className="text-right font-mono text-xs shrink-0">
-                                <span className="font-extrabold text-slate-900 block">{p.qty} unidades</span>
-                                <span className="text-slate-400 text-[10px]">${p.total.toLocaleString()}</span>
+                            ) : (
+                              activeAlertsList.map((a, idx) => (
+                                <div key={`alert_${idx}`} className={`p-2.5 rounded-xl border flex gap-2.5 text-[11px] leading-snug ${
+                                  a.level === 'critical' ? 'bg-rose-50 border-rose-100 text-rose-800' :
+                                  a.level === 'warning' ? 'bg-amber-50 border-amber-100 text-amber-800' :
+                                  'bg-indigo-50 border-indigo-100 text-indigo-800'
+                                }`}>
+                                  <span className="text-xs shrink-0">{a.level === 'critical' ? '🔴' : a.level === 'warning' ? '⚠️' : 'ℹ️'}</span>
+                                  <div>
+                                    <h5 className="font-extrabold uppercase text-[10px] tracking-wider mb-0.5">{a.title}</h5>
+                                    <p className="text-[10px] text-slate-500 font-medium">{a.desc}</p>
+                                  </div>
+                                </div>
+                              ))
+                            )}
+                          </div>
+                        </div>
+
+                        {/* 3. Compras Pendientes */}
+                        <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-2xs space-y-3.5 lg:col-span-1">
+                          <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+                            <span className="text-[10px] font-extrabold text-slate-500 uppercase tracking-wider">Facturas y Proveedores</span>
+                            <span className="text-[9px] bg-red-50 text-red-700 px-1.5 py-0.5 rounded font-bold">Por Pagar</span>
+                          </div>
+                          <div className="space-y-2.5 max-h-[260px] overflow-y-auto pr-1">
+                            <div className="bg-slate-50 p-3 rounded-xl border border-slate-100 flex justify-between items-center">
+                              <div>
+                                <span className="text-[9px] font-bold text-slate-450 block uppercase">PAGO PENDIENTE MES</span>
+                                <span className="text-sm font-mono font-extrabold text-slate-900">${pendingInvoicesSum.toLocaleString()}</span>
+                              </div>
+                              <span className="text-xs bg-red-100 text-red-800 font-bold px-2 py-1 rounded-lg">
+                                {pendingInvoices.length} boletas
+                              </span>
+                            </div>
+
+                            <p className="text-[10px] font-black uppercase text-slate-400 tracking-wider pt-1 border-t border-slate-100">Próximos Vencimientos</p>
+                            {upcomingDueBills.length === 0 ? (
+                              <p className="text-[11px] text-slate-400 font-mono py-4 text-center">Sin facturas pendientes de pago.</p>
+                            ) : (
+                              upcomingDueBills.map((bill, idx) => {
+                                const isOverdue = bill.vencimiento && new Date(bill.vencimiento) < new Date();
+                                return (
+                                  <div key={`due_${idx}`} className="flex items-center justify-between py-1.5 border-b border-slate-50 last:border-0 text-xs">
+                                    <div className="truncate pr-1">
+                                      <p className="font-semibold text-slate-900 truncate">{bill.concepto}</p>
+                                      <span className={`text-[9px] font-mono font-bold ${isOverdue ? 'text-rose-600' : 'text-slate-400'}`}>
+                                        Vence: {bill.vencimiento ? new Date(bill.vencimiento).toLocaleDateString('es-UY') : 'Pendiente'}
+                                      </span>
+                                    </div>
+                                    <span className="font-mono font-extrabold text-slate-800 shrink-0">${Number(bill.monto).toLocaleString()}</span>
+                                  </div>
+                                );
+                              })
+                            )}
+                          </div>
+                        </div>
+
+                        {/* 4. Productos Sin Stock */}
+                        <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-2xs space-y-3.5 lg:col-span-1">
+                          <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+                            <span className="text-[10px] font-extrabold text-slate-500 uppercase tracking-wider">Agotados / Sin Stock</span>
+                            <span className="text-[9px] bg-rose-50 text-rose-700 px-1.5 py-0.5 rounded font-bold">{outOfStockList.length}</span>
+                          </div>
+                          
+                          <div className="space-y-2 max-h-[260px] overflow-y-auto pr-1">
+                            {outOfStockList.length === 0 ? (
+                              <div className="py-12 text-center text-slate-400 text-[11px]">
+                                <span className="text-emerald-500 font-bold block mb-1">✓ Depósitos Llenos</span>
+                                Todos los productos del catálogo tienen unidades disponibles.
+                              </div>
+                            ) : (
+                              outOfStockList.slice(0, 10).map((art) => (
+                                <div key={`out_${art.id}`} className="flex items-center justify-between py-1.5 border-b border-slate-50 last:border-0 text-xs">
+                                  <div className="truncate pr-1">
+                                    <p className="font-semibold text-slate-900 truncate">{art.nombre}</p>
+                                    <span className="text-[9px] font-mono text-rose-500 font-extrabold">{art.codigo}</span>
+                                  </div>
+                                  <div className="text-right shrink-0">
+                                    <span className="text-[10px] font-mono font-bold bg-rose-50 text-rose-700 px-2 py-0.5 rounded">
+                                      0 u.
+                                    </span>
+                                  </div>
+                                </div>
+                              ))
+                            )}
+                            {outOfStockList.length > 10 && (
+                              <p className="text-[9px] text-slate-400 text-center font-bold pt-1">Y {outOfStockList.length - 10} artículos más sin stock.</p>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* FILA 4: ANÁLISIS E INSIGHTS */}
+                    <div>
+                      <h4 className="text-xs font-extrabold uppercase tracking-widest text-slate-400 mb-2.5 flex items-center gap-1.5">
+                        <span className="w-1.5 h-1.5 bg-indigo-500 rounded-full"></span>
+                        Fila 4: Análisis de Desempeño
+                      </h4>
+                      
+                      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+                        {/* A. Gráfico de ventas de la semana */}
+                        <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-2xs lg:col-span-5 space-y-3.5">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[10px] font-extrabold text-slate-500 uppercase tracking-wider">Histórico de Ventas de la Semana</span>
+                            <span className="text-[9px] bg-emerald-50 text-emerald-800 px-2 py-0.5 rounded font-semibold font-mono">Últimos 7 días</span>
+                          </div>
+
+                          {/* Beautiful Custom SVG Chart */}
+                          <div className="relative pt-4">
+                            <svg viewBox="0 0 500 180" className="w-full h-auto overflow-visible">
+                              {/* Grid lines */}
+                              <line x1="40" y1="140" x2="480" y2="140" stroke="#f1f5f9" strokeWidth="1" />
+                              <line x1="40" y1="95" x2="480" y2="95" stroke="#f1f5f9" strokeWidth="1" strokeDasharray="3" />
+                              <line x1="40" y1="50" x2="480" y2="50" stroke="#f1f5f9" strokeWidth="1" strokeDasharray="3" />
+                              <line x1="40" y1="10" x2="480" y2="10" stroke="#f1f5f9" strokeWidth="1" strokeDasharray="3" />
+
+                              {/* Bars and labels */}
+                              {last7DaysData.map((day, idx) => {
+                                const x = 60 + idx * 62;
+                                const barHeight = maxSalesVal > 0 ? (day.total / maxSalesVal) * 120 : 0;
+                                const y = 140 - barHeight;
+                                return (
+                                  <g key={`chart_g_${idx}`} className="group cursor-pointer">
+                                    {/* Tooltip background on hover */}
+                                    <rect x={x - 12} y={y - 20} width="52" height="15" rx="3" fill="#0f172a" className="opacity-0 group-hover:opacity-100 transition-opacity" />
+                                    <text x={x + 14} y={y - 10} fill="#ffffff" fontSize="9" fontWeight="bold" textAnchor="middle" className="opacity-0 group-hover:opacity-100 transition-opacity font-mono">
+                                      ${Math.round(day.total)}
+                                    </text>
+
+                                    {/* Bar element */}
+                                    <rect
+                                      x={x}
+                                      y={y}
+                                      width="28"
+                                      height={barHeight}
+                                      rx="4"
+                                      fill={day.total > 0 ? "url(#salesGradient)" : "#e2e8f0"}
+                                      className="transition-all duration-500 hover:opacity-95"
+                                    />
+
+                                    {/* Text above bar */}
+                                    {day.total > 0 && (
+                                      <text x={x + 14} y={y - 4} fill="#64748b" fontSize="8" fontWeight="bold" textAnchor="middle" className="font-mono">
+                                        ${Math.round(day.total / 100) / 10}k
+                                      </text>
+                                    )}
+
+                                    {/* X Axis Label */}
+                                    <text x={x + 14} y="156" fill="#94a3b8" fontSize="9" fontWeight="extrabold" textAnchor="middle" className="uppercase">
+                                      {day.dayName}
+                                    </text>
+                                  </g>
+                                );
+                              })}
+
+                              {/* Gradients definitions */}
+                              <defs>
+                                <linearGradient id="salesGradient" x1="0" y1="0" x2="0" y2="1">
+                                  <stop offset="0%" stopColor="#4f46e5" />
+                                  <stop offset="100%" stopColor="#818cf8" stopOpacity="0.4" />
+                                </linearGradient>
+                              </defs>
+                            </svg>
+                          </div>
+                          
+                          <div className="bg-indigo-50/50 p-2.5 rounded-xl text-[10px] text-slate-500 leading-normal border border-indigo-100/40">
+                            💡 <strong>Foco:</strong> Este gráfico interactivo muestra la tendencia diaria. Pasa el cursor por las columnas para ver los importes de facturación exactos.
+                          </div>
+                        </div>
+
+                        {/* B. Rendimiento por sucursal */}
+                        <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-2xs lg:col-span-4 space-y-4">
+                          <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+                            <span className="text-[10px] font-extrabold text-slate-500 uppercase tracking-wider">Rendimiento por Sucursal</span>
+                            <span className="text-[9px] bg-brand-gold text-[#050B1A] px-1.5 py-0.5 rounded font-black font-mono">Mejor: {bestBranchThisMonth}</span>
+                          </div>
+
+                          <div className="space-y-4 pt-1">
+                            {/* Montevideo Depot */}
+                            <div className="space-y-1">
+                              <div className="flex items-center justify-between text-xs font-bold">
+                                <span className="text-slate-800">Montevideo</span>
+                                <span className="font-mono text-slate-900">${mvdSalesTotal.toLocaleString()} ({mvdPercent}%)</span>
+                              </div>
+                              <div className="w-full bg-slate-100 h-2.5 rounded-full overflow-hidden">
+                                <div className="bg-slate-850 h-full rounded-full" style={{ width: `${mvdPercent}%` }}></div>
+                              </div>
+                              <div className="flex justify-between text-[9px] text-slate-400 font-mono">
+                                <span>Ganancia: ${Math.round(mvdGains).toLocaleString()}</span>
+                                <span>Unidades: {mvdUnitsSold} u.</span>
                               </div>
                             </div>
-                          ))
-                        )}
+
+                            {/* Pinamar Depot */}
+                            <div className="space-y-1 pt-1.5">
+                              <div className="flex items-center justify-between text-xs font-bold">
+                                <span className="text-indigo-600">Pinamar</span>
+                                <span className="font-mono text-indigo-700">${pinSalesTotal.toLocaleString()} ({pinPercent}%)</span>
+                              </div>
+                              <div className="w-full bg-slate-100 h-2.5 rounded-full overflow-hidden">
+                                <div className="bg-indigo-600 h-full rounded-full" style={{ width: `${pinPercent}%` }}></div>
+                              </div>
+                              <div className="flex justify-between text-[9px] text-slate-400 font-mono">
+                                <span>Ganancia: ${Math.round(pinGains).toLocaleString()}</span>
+                                <span>Unidades: {pinUnitsSold} u.</span>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="bg-slate-50 p-2.5 rounded-xl text-[10px] text-slate-500 border border-slate-100 mt-2">
+                            <strong>Inventario Actual simple:</strong>
+                            <div className="flex justify-between mt-1 text-xs font-mono font-bold text-slate-700">
+                              <span>Mvd: {totalStockMvd} u.</span>
+                              <span>Pin: {totalStockPin} u.</span>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* C. Rentabilidad por producto */}
+                        <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-2xs lg:col-span-3 space-y-3.5">
+                          <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+                            <span className="text-[10px] font-extrabold text-slate-500 uppercase tracking-wider">Top Rentabilidad</span>
+                            <span className="text-[9px] bg-emerald-50 text-emerald-800 px-1.5 py-0.5 rounded font-bold font-mono">Ganancia</span>
+                          </div>
+
+                          <div className="space-y-2.5 max-h-[175px] overflow-y-auto pr-1">
+                            {productsProfit.length === 0 ? (
+                              <p className="text-[11px] text-slate-400 py-10 text-center font-mono">Sin datos disponibles.</p>
+                            ) : (
+                              productsProfit.map((item, idx) => (
+                                <div key={`profit_${item.id}`} className="flex items-center justify-between text-xs">
+                                  <div className="truncate pr-1">
+                                    <p className="font-semibold text-slate-900 truncate">{item.nombre}</p>
+                                    <span className="text-[9px] font-mono text-slate-400">{item.codigo}</span>
+                                  </div>
+                                  <span className="font-mono font-bold text-emerald-600 text-right shrink-0">
+                                    +${Math.round(item.profit).toLocaleString()}
+                                  </span>
+                                </div>
+                              ))
+                            )}
+                          </div>
+
+                          <button
+                            type="button"
+                            onClick={() => setMandoSubTab('rentabilidad')}
+                            className="w-full text-center py-1.5 border border-slate-200 hover:border-slate-300 text-[10px] font-black uppercase text-slate-600 rounded-xl transition-all cursor-pointer"
+                          >
+                            Ver Rentabilidad Avanzada →
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* SECCIÓN 7: ACTIVIDAD RECIENTE */}
+                    <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-xs space-y-4">
+                      <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+                        <span className="text-xs font-black uppercase tracking-wider text-slate-700">Bitácora de Auditoría y Actividad Reciente</span>
+                        <span className="text-[9px] text-slate-400 font-mono">Auditoría Rápida de Operaciones</span>
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        {/* Últimas Ventas */}
+                        <div className="space-y-2.5">
+                          <span className="text-[10px] font-extrabold text-indigo-650 uppercase tracking-wider block">Últimas Ventas</span>
+                          <div className="divide-y divide-slate-100 text-xs">
+                            {latestSalesForList.length === 0 ? (
+                              <p className="text-[11px] text-slate-400 font-mono py-4">No se registran ventas.</p>
+                            ) : (
+                              latestSalesForList.map((s) => (
+                                <div key={`l_sale_${s.id}`} className="flex items-center justify-between py-1.5 first:pt-0 last:pb-0">
+                                  <div>
+                                    <p className="font-semibold text-slate-850 line-clamp-1">{s.articulo_nombre}</p>
+                                    <span className="text-[9px] font-mono text-slate-400">
+                                      {new Date(s.fecha).toLocaleDateString('es-UY')} • Suc: {s.sucursal === 'Pin' ? 'Pinamar' : 'Mvd'}
+                                    </span>
+                                  </div>
+                                  <span className="font-mono font-black text-slate-900 shrink-0">${s.total}</span>
+                                </div>
+                              ))
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Últimos Movimientos de Caja y Traslados */}
+                        <div className="space-y-4">
+                          <div className="space-y-2.5">
+                            <span className="text-[10px] font-extrabold text-indigo-650 uppercase tracking-wider block">Últimos Movimientos de Caja</span>
+                            <div className="divide-y divide-slate-100 text-xs">
+                              {latestCashMovsForList.length === 0 ? (
+                                <p className="text-[11px] text-slate-400 font-mono py-4">Sin movimientos financieros.</p>
+                              ) : (
+                                latestCashMovsForList.map((m) => (
+                                  <div key={`l_mov_${m.id}`} className="flex items-center justify-between py-1.5 first:pt-0 last:pb-0">
+                                    <div>
+                                      <p className="font-semibold text-slate-850 line-clamp-1">{m.concepto}</p>
+                                      <span className="text-[9px] font-mono text-slate-400">
+                                        Tipo: {m.tipo === 'ingreso' ? 'Ingreso' : m.tipo === 'egreso' ? 'Egreso' : 'Transferencia'}
+                                      </span>
+                                    </div>
+                                    <span className={`font-mono font-black shrink-0 ${m.tipo === 'ingreso' ? 'text-emerald-600' : 'text-red-500'}`}>
+                                      {m.tipo === 'ingreso' ? '+' : '-'}${m.monto}
+                                    </span>
+                                  </div>
+                                ))
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="space-y-2.5 pt-2 border-t border-slate-100">
+                            <span className="text-[10px] font-extrabold text-indigo-650 uppercase tracking-wider block">Últimos Traslados entre Depósitos</span>
+                            <div className="divide-y divide-slate-100 text-xs">
+                              {latestTransfersForList.length === 0 ? (
+                                <p className="text-[11px] text-slate-400 font-mono py-4">No se han registrado traslados de mercadería.</p>
+                              ) : (
+                                latestTransfersForList.map((t) => (
+                                  <div key={`l_tr_${t.id}`} className="flex items-center justify-between py-1.5 first:pt-0 last:pb-0">
+                                    <div>
+                                      <span className="text-[9px] font-mono font-bold text-slate-400">Remito #{t.id}</span>
+                                      <p className="font-semibold text-slate-850">
+                                        Trayecto: {t.origen_deposito_mvd ? 'Mvd' : 'Pinamar'} → {t.destino_deposito_mvd ? 'Mvd' : 'Pinamar'}
+                                      </p>
+                                    </div>
+                                    <span className="font-mono text-[10px] font-bold text-slate-500 bg-slate-100 px-2 py-0.5 rounded shrink-0">
+                                      {t.fecha ? new Date(t.fecha).toLocaleDateString('es-UY') : 'N/A'}
+                                    </span>
+                                  </div>
+                                ))
+                              )}
+                            </div>
+                          </div>
+                        </div>
                       </div>
                     </div>
                   </div>
-
-                  {/* Existing sales history summary list at bottom */}
-                  <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm">
-                    <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-4">
-                      Últimos Movimientos de Facturación
-                    </h3>
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-left text-xs text-slate-800">
-                        <thead>
-                          <tr className="bg-slate-50 border-b border-slate-100 text-[10px] font-bold uppercase text-slate-400 tracking-wider">
-                            <th className="py-2.5 px-3">Fecha</th>
-                            <th className="py-2.5 px-3">Cliente</th>
-                            <th className="py-2.5 px-3">Artículo Vendido</th>
-                            <th className="py-2.5 px-3 text-center">Unidades</th>
-                            <th className="py-2.5 px-3 text-center">Sucursal</th>
-                            <th className="py-2.5 px-3 text-right">Monto de Facturación</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-100 font-medium text-slate-900">
-                          {sales.length === 0 ? (
-                            <tr>
-                              <td colSpan={6} className="text-center py-6 text-slate-400 font-mono">Ninguna venta realizada todavía.</td>
-                            </tr>
-                          ) : (
-                            sales.slice(0, 15).map(s => {
-                              const isComp = catalog.find(x => x.id === s.articulo_id)?.tipo === 'compuesto';
-                              return (
-                                <tr key={s.id} className="hover:bg-slate-50/50">
-                                  <td className="py-3 px-3 text-slate-405 font-mono">{new Date(s.fecha).toLocaleString('es-UY', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' })}</td>
-                                  <td className="py-3 px-3">{s.cliente}</td>
-                                  <td className={`py-3 px-3 font-semibold ${isComp ? 'text-indigo-600 font-black' : 'text-slate-905'}`}>
-                                    {s.articulo_nombre} ({s.articulo_codigo})
-                                  </td>
-                                  <td className="py-3 px-3 text-center font-mono">{s.cantidad}</td>
-                                  <td className="py-3 px-3 text-center">
-                                    <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${s.sucursal === 'Pin' ? 'bg-indigo-50 text-indigo-700' : 'bg-slate-100 text-slate-850'}`}>
-                                      {s.sucursal === 'Pin' ? 'Pinamar' : 'Montevideo'}
-                                    </span>
-                                  </td>
-                                  <td className="py-3 px-3 text-right font-mono font-bold text-slate-900">${s.total}</td>
-                                </tr>
-                              );
-                            })
-                          )}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                </div>
-              )}
+                );
+              })()}
 
               {/* SUB-TAB 2: RENTABILIDAD POR PRODUCTO */}
               {mandoSubTab === 'rentabilidad' && (
@@ -5047,96 +5719,85 @@ export default function App() {
                             const isWhatsApp = g.canal?.toLowerCase() === 'whatsapp';
                             const totalQty = g.items.reduce((sum: number, item: any) => sum + Number(item.cantidad || 0), 0);
                             return (
-                              <tr key={g.id} className="hover:bg-slate-50/40 transition-colors">
-                                <td className="py-2.5 px-3 text-slate-400 font-mono leading-tight">
+                              <tr key={g.id} className="hover:bg-slate-50/50 transition-colors border-b border-slate-100">
+                                <td className="py-3 px-3 text-slate-500 font-mono text-[10px] leading-tight">
                                   {new Date(g.fecha).toLocaleString('es-UY', { year: '2-digit', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}
                                 </td>
-                                <td className="py-2.5 px-3 font-semibold text-slate-800">
+                                <td className="py-3 px-3 font-bold text-slate-900 text-xs">
                                   {g.cliente}
                                 </td>
-                                <td className="py-2.5 px-3">
-                                  <div className="space-y-1.5 py-1">
+                                <td className="py-3 px-3">
+                                  <div className="space-y-1.5 py-1 max-w-sm">
                                     {g.items.map((item: any) => {
                                       const isCompuesto = catalog.find(x => x.id === item.articulo_id)?.tipo === 'compuesto';
                                       return (
-                                        <div key={item.id} className="flex items-center justify-between gap-4 bg-slate-50/50 p-1.5 px-2 rounded-lg border border-slate-100 hover:border-slate-200 transition-colors">
-                                          <div>
-                                            <div className={`font-semibold ${isCompuesto ? 'text-blue-600 font-bold' : 'text-slate-850'}`}>
+                                        <div key={item.id} className="flex items-center justify-between gap-4 bg-slate-50 border border-slate-150/60 p-2 rounded-xl transition-all hover:bg-slate-100/60">
+                                          <div className="min-w-0 flex-1">
+                                            <div className={`font-bold truncate text-[11px] ${isCompuesto ? 'text-indigo-600' : 'text-slate-800'}`}>
                                               {item.articulo_nombre}
                                             </div>
-                                            <div className="text-[10px] text-slate-400 font-mono">
-                                              {item.articulo_codigo} &bull; <span className="font-semibold text-slate-500">${Number(item.total / item.cantidad).toLocaleString('es-UY')} c/u</span>
+                                            <div className="text-[9px] text-slate-400 font-mono flex items-center gap-1 mt-0.5">
+                                              <span>{item.articulo_codigo}</span>
+                                              <span>&bull;</span>
+                                              <span className="font-semibold text-slate-500">${Number(item.total / item.cantidad).toLocaleString('es-UY')} c/u</span>
                                             </div>
                                           </div>
-                                          <div className="flex items-center gap-1.5 text-right shrink-0">
-                                            <span className="text-[10px] bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded font-mono font-bold">
+                                          <div className="shrink-0">
+                                            <span className="text-[10px] bg-slate-200 text-slate-700 px-2 py-0.5 rounded-lg font-mono font-bold">
                                               x{item.cantidad}
                                             </span>
-                                            <div className="flex items-center gap-1">
-                                              <button
-                                                onClick={() => handleStartEditSale(item)}
-                                                title="Editar artículo de la venta"
-                                                className="p-1 text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 rounded transition-colors"
-                                              >
-                                                <Pencil className="w-3 h-3" />
-                                              </button>
-                                              <button
-                                                onClick={() => {
-                                                  setSaleToDelete({
-                                                    ...item,
-                                                    items: [item] // set as single item for deletion
-                                                  } as any);
-                                                }}
-                                                title="Eliminar artículo de la venta"
-                                                className="p-1 text-slate-500 hover:text-red-600 hover:bg-red-50 rounded transition-colors"
-                                              >
-                                                <Trash2 className="w-3 h-3" />
-                                              </button>
-                                            </div>
                                           </div>
                                         </div>
                                       );
                                     })}
                                   </div>
                                 </td>
-                                <td className="py-2.5 px-3 text-center font-mono font-bold text-slate-700">
+                                <td className="py-3 px-3 text-center font-mono font-bold text-slate-700">
                                   {totalQty}
                                 </td>
-                                <td className="py-2.5 px-3 text-center space-y-0.5">
-                                  <span className={`inline-block px-1.5 py-0.5 rounded text-[8px] font-extrabold ${
-                                    isML ? 'bg-yellow-50 text-yellow-850 border border-yellow-200' :
-                                    isWhatsApp ? 'bg-emerald-50 text-emerald-800 border border-emerald-200' :
-                                    'bg-slate-50 text-slate-600 border border-slate-200'
+                                <td className="py-3 px-3 text-center space-y-1.5">
+                                  <span className={`inline-block px-2 py-0.5 rounded-full text-[9px] font-extrabold ${
+                                    isML ? 'bg-yellow-100 text-yellow-800 border border-yellow-200' :
+                                    isWhatsApp ? 'bg-emerald-100 text-emerald-800 border border-emerald-200' :
+                                    'bg-indigo-100 text-indigo-800 border border-indigo-200'
                                   }`}>
                                     {g.canal || "Venta Directa"}
                                   </span>
-                                  <br/>
-                                  <span className={`inline-block px-1.5 py-0.5 rounded text-[8px] font-extrabold ${g.sucursal === 'Pin' ? 'bg-indigo-50 text-indigo-700' : 'bg-slate-100 text-slate-700'}`}>
+                                  <div/>
+                                  <span className={`inline-block px-2 py-0.5 rounded-full text-[9px] font-extrabold ${g.sucursal === 'Pin' ? 'bg-purple-100 text-purple-800' : 'bg-slate-100 text-slate-700'}`}>
                                     {g.sucursal === 'Pin' ? 'Pinamar' : 'Montevideo'}
                                   </span>
                                 </td>
-                                <td className="py-2.5 px-3 text-right font-mono font-bold text-slate-900 text-xs">
+                                <td className="py-3 px-3 text-right font-mono font-bold text-slate-900 text-xs">
                                   ${g.total.toLocaleString('es-UY', { minimumFractionDigits: 1 })}
                                 </td>
-                                <td className="py-2.5 px-3 text-right font-mono text-slate-400">
+                                <td className="py-3 px-3 text-right font-mono text-slate-400 text-[11px]">
                                   ${g.costo_envio > 0 ? g.costo_envio.toLocaleString('es-UY', { minimumFractionDigits: 1 }) : '0'}
                                 </td>
-                                <td className="py-2.5 px-3 text-right font-mono font-bold text-emerald-600 bg-emerald-50/20 text-xs">
+                                <td className="py-3 px-3 text-right font-mono font-extrabold text-emerald-600 bg-emerald-50/30 text-xs">
                                   ${g.ganancia_neta.toLocaleString('es-UY', { minimumFractionDigits: 1 })}
                                 </td>
-                                <td className="py-2.5 px-3 text-right font-mono text-indigo-600 font-semibold">
+                                <td className="py-3 px-3 text-right font-mono text-indigo-600 font-semibold text-[11px]">
                                   ${g.total_franquicia.toLocaleString('es-UY', { minimumFractionDigits: 1 })}
                                 </td>
-                                <td className="py-2.5 px-3 text-right font-mono text-purple-600 font-semibold">
+                                <td className="py-3 px-3 text-right font-mono text-purple-600 font-semibold text-[11px]">
                                   ${g.total_juem.toLocaleString('es-UY', { minimumFractionDigits: 1 })}
                                 </td>
-                                <td className="py-2.5 px-3 text-center">
-                                  <span className={`inline-block px-1.5 py-0.5 rounded text-[8px] font-extrabold ${g.aprobado === 'Aprobado' ? 'bg-emerald-500 text-white' : 'bg-amber-400 text-slate-950'}`}>
+                                <td className="py-3 px-3 text-center">
+                                  <span className={`inline-block px-2 py-0.5 rounded-full text-[9px] font-extrabold ${g.aprobado === 'Aprobado' ? 'bg-emerald-500 text-white' : 'bg-amber-400 text-slate-950'}`}>
                                     {g.aprobado || 'Aprobado'}
                                   </span>
                                 </td>
-                                <td className="py-2.5 px-3 text-center">
-                                  <div className="flex flex-col items-center justify-center gap-1">
+                                <td className="py-3 px-3 text-center">
+                                  <div className="flex flex-col items-center justify-center gap-1.5 min-w-[90px]">
+                                    <button
+                                      onClick={() => handleStartEditGroupedSale(g)}
+                                      title="Editar factura"
+                                      className="w-full py-1.5 px-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-xl transition-all flex items-center justify-center gap-1 font-extrabold text-[9px] uppercase tracking-wider border border-indigo-150/40 cursor-pointer"
+                                    >
+                                      <Pencil className="w-2.5 h-2.5" />
+                                      <span>Editar</span>
+                                    </button>
                                     <button
                                       onClick={() => {
                                         setSaleToDelete({
@@ -5148,10 +5809,10 @@ export default function App() {
                                         } as any);
                                       }}
                                       title="Eliminar venta completa"
-                                      className="p-1 px-2 bg-red-50 hover:bg-red-100 text-red-650 rounded transition-colors flex items-center justify-center gap-1 font-bold text-[9px] uppercase tracking-wider"
+                                      className="w-full py-1.5 px-2 bg-red-50 hover:bg-red-100 text-red-650 rounded-xl transition-all flex items-center justify-center gap-1 font-extrabold text-[9px] uppercase tracking-wider border border-red-100/40 cursor-pointer"
                                     >
                                       <Trash2 className="w-2.5 h-2.5" />
-                                      <span>Borrar Venta</span>
+                                      <span>Borrar</span>
                                     </button>
                                   </div>
                                 </td>
@@ -5516,21 +6177,21 @@ export default function App() {
                   <span className="px-2 py-0.5 text-[10px] bg-indigo-500/20 text-indigo-300 rounded font-bold uppercase tracking-wider font-mono">
                     Módulo ERP
                   </span>
-                  <span className="text-[10px] text-slate-400 font-mono">Control de Inventario</span>
+                  <span className="text-[10px] text-slate-400 font-mono">Control de Gastos y Compras</span>
                 </div>
                 <h2 className="text-xl font-black tracking-tight text-white flex items-center gap-2">
                   <ClipboardCheck className="w-5 h-5 text-indigo-400" />
-                  <span>Reposición de Mercadería (Ajuste Positivo)</span>
+                  <span>Ingreso de Factura de Proveedor</span>
                 </h2>
                 <p className="text-xs text-slate-300">
-                  Ingresa baches de mercadería recibida de proveedores para actualizar de forma automatizada stocks, costos e historiales contables.
+                  Ingresa y registra las facturas emitidas por los proveedores para tener un registro histórico detallado de los egresos de la empresa.
                 </p>
               </div>
 
               <div className="flex items-center gap-3 shrink-0">
                 <div className="text-right">
-                  <p className="text-[10px] text-slate-400 uppercase tracking-wider font-bold">Total Transacciones</p>
-                  <p className="text-lg font-mono font-bold text-indigo-300">{reposiciones.length} Guías</p>
+                  <p className="text-[10px] text-slate-400 uppercase tracking-wider font-bold">Total Facturas</p>
+                  <p className="text-lg font-mono font-bold text-indigo-300">{reposiciones.length} Comprobantes</p>
                 </div>
                 <div className="w-10 h-10 rounded-xl bg-slate-800 border border-slate-700 flex items-center justify-center">
                   <History className="w-5 h-5 text-indigo-400" />
@@ -5567,7 +6228,7 @@ export default function App() {
                     </div>
                     <div>
                       <h3 className="text-xs font-bold uppercase tracking-wider text-slate-900">
-                        {isEditingRep ? "Modificar Reposición Registrada" : "Nueva Entrada de Mercadería"}
+                        {isEditingRep ? "Modificar Factura de Proveedor" : "Nueva Factura de Proveedor"}
                       </h3>
                       <p className="text-[10px] text-slate-400 font-mono">Completa la cabecera y añade ítems al detalle</p>
                     </div>
@@ -5588,9 +6249,9 @@ export default function App() {
                           observaciones: '',
                           usuario: sessionUser?.usuario || 'Uriel',
                           detalles: [],
-                          actualizar_stock: true,
-                          actualizar_costos: true,
-                          actualizar_precio_sugerido: true,
+                          actualizar_stock: false,
+                          actualizar_costos: false,
+                          actualizar_precio_sugerido: false,
                           registrar_auditoria: true
                         });
                       }}
@@ -5604,639 +6265,641 @@ export default function App() {
                 {/* Form Submission code */}
                 <form onSubmit={handleRepSubmit} className="space-y-6 text-xs font-semibold">
                   
-                  {/* CABECERA (Header Data) */}
-                  <div className="bg-slate-50 p-4 rounded-xl border border-slate-150 space-y-4">
-                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-200 pb-2">
-                      <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1">
-                        <span className="w-1.5 h-1.5 rounded-full bg-slate-400"></span>
-                        <span>1. Datos de Cabecera</span>
-                      </p>
+                  {/* Step Progress Bar */}
+                  <div className="bg-slate-50 border border-slate-150 p-4 rounded-xl mb-2">
+                    <div className="flex items-center justify-between relative">
+                      {/* Background connector line */}
+                      <div className="absolute left-0 right-0 top-[14px] h-0.5 bg-slate-200 z-0"></div>
+                      <div 
+                        className="absolute left-0 top-[14px] h-0.5 bg-indigo-600 transition-all duration-300 z-0"
+                        style={{ width: repStep === 1 ? '0%' : repStep === 2 ? '50%' : '100%' }}
+                      ></div>
 
-                      <div className="flex items-center gap-1 bg-indigo-50/50 px-2 py-0.5 rounded-lg border border-indigo-100">
-                        <span className="w-1.5 h-1.5 bg-indigo-500 rounded-full animate-pulse"></span>
-                        <span className="text-[9px] text-indigo-700 font-bold uppercase tracking-wider">Lector de Factura IA Activado</span>
-                      </div>
-                    </div>
-
-                    {/* Gemini AI Invoice scanner upload container */}
-                    <div className="bg-gradient-to-br from-indigo-50/40 to-slate-50 border border-dashed border-indigo-200/80 p-4 rounded-xl flex flex-col md:flex-row items-center justify-between gap-4 shadow-sm">
-                      <div className="space-y-1 text-center md:text-left">
-                        <div className="flex items-center justify-center md:justify-start gap-1.5 text-indigo-700 font-bold">
-                          <Sparkles className="w-4 h-4 animate-pulse shrink-0" />
-                          <span className="tracking-tight text-xs">Carga Inteligente por Foto de Factura</span>
+                      {/* Step 1 button */}
+                      <button
+                        type="button"
+                        onClick={() => setRepStep(1)}
+                        className="relative z-10 flex flex-col items-center gap-1 group focus:outline-none cursor-pointer"
+                      >
+                        <div className={`w-7 h-7 rounded-full flex items-center justify-center font-bold text-xs transition-all duration-300 ${
+                          repStep >= 1 ? 'bg-indigo-600 text-white shadow-md shadow-indigo-100' : 'bg-slate-200 text-slate-500'
+                        }`}>
+                          1
                         </div>
-                        <p className="text-[11px] text-slate-500 max-w-lg font-sans leading-relaxed">
-                          Saca una foto desde tu celular o sube una imagen de la factura. Nuestra IA con Gemini procesará montos totales, fecha, proveedor y autocompletará la planilla de bache y catálogo vinculada.
-                        </p>
-                      </div>
+                        <span className={`text-[9px] uppercase font-bold tracking-wider transition-colors ${
+                          repStep === 1 ? 'text-indigo-600 font-extrabold' : 'text-slate-400'
+                        }`}>1. Cabecera</span>
+                      </button>
 
-                      <div className="relative shrink-0">
-                        <input
-                          id="ai-invoice-scanner-input"
-                          type="file"
-                          accept="image/*"
-                          className="hidden"
-                          onChange={handleInvoiceFileChange}
-                          disabled={isParsingInvoice}
-                        />
-                        <label
-                          htmlFor="ai-invoice-scanner-input"
-                          className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-black cursor-pointer transition-all ${
-                            isParsingInvoice
-                              ? 'bg-slate-200 text-slate-400 cursor-not-allowed shadow-none'
-                              : 'bg-indigo-600 text-white hover:bg-indigo-700 shadow-md hover:shadow-indigo-100/50'
-                          }`}
-                        >
-                          <Sparkles className="w-4 h-4" />
-                          <span>{isParsingInvoice ? "Analizando Factura..." : "Tomar Foto / Subir Factura"}</span>
-                        </label>
-                      </div>
-                    </div>
-
-                    {isParsingInvoice && (
-                      <div className="bg-white border border-slate-150 p-6 rounded-xl flex flex-col items-center justify-center text-center space-y-3 animate-pulse">
-                        <RefreshCw className="w-8 h-8 text-indigo-600 animate-spin animate-infinite duration-1000" />
-                        <div className="space-y-1">
-                          <p className="text-xs font-black text-slate-800">Procesando Factura con Gemini 3.5 Flash</p>
-                          <p className="text-[10px] text-slate-500 max-w-sm font-sans leading-relaxed">
-                            Analizando estructura, montos y descripciones del documento. Buscando códigos SKU del catálogo para mapear automáticamente baches de entrada directos.
-                          </p>
+                      {/* Step 2 button */}
+                      <button
+                        type="button"
+                        onClick={() => setRepStep(2)}
+                        className="relative z-10 flex flex-col items-center gap-1 group focus:outline-none cursor-pointer"
+                      >
+                        <div className={`w-7 h-7 rounded-full flex items-center justify-center font-bold text-xs transition-all duration-300 ${
+                          repStep >= 2 ? 'bg-indigo-600 text-white shadow-md shadow-indigo-100' : 'bg-slate-200 text-slate-500'
+                        }`}>
+                          2
                         </div>
-                      </div>
-                    )}
+                        <span className={`text-[9px] uppercase font-bold tracking-wider transition-colors ${
+                          repStep === 2 ? 'text-indigo-600 font-extrabold' : 'text-slate-400'
+                        }`}>2. Añadir Ítems</span>
+                      </button>
 
-                    {parseInvoiceError && (
-                      <div className="bg-red-50 border border-red-200 p-3 rounded-xl flex items-center gap-2 text-red-700">
-                        <AlertCircle className="w-4 h-4 shrink-0" />
-                        <span className="text-[11px] font-sans font-medium">{parseInvoiceError}</span>
-                      </div>
-                    )}
-
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      {/* Date Field */}
-                      <div className="space-y-1">
-                        <label className="text-slate-500 uppercase tracking-wider text-[10px]">Fecha de Entrada</label>
-                        <input
-                          type="date"
-                          required
-                          value={repForm.fecha}
-                          onChange={(e) => setRepForm(prev => ({ ...prev, fecha: e.target.value }))}
-                          className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-slate-900 font-semibold focus:ring-2 focus:ring-indigo-500 text-xs"
-                        />
-                      </div>
-
-                      {/* Supplier Field */}
-                      <div className="space-y-1">
-                        <label className="text-slate-500 uppercase tracking-wider text-[10px]">Proveedor (*)</label>
-                        <input
-                          type="text"
-                          required
-                          placeholder="Ej: Mayorista Fundas Inc."
-                          value={repForm.proveedor}
-                          onChange={(e) => setRepForm(prev => ({ ...prev, proveedor: e.target.value }))}
-                          className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-slate-900 font-semibold focus:ring-2 focus:ring-indigo-500 text-xs"
-                        />
-                      </div>
-
-                      {/* Invoice number */}
-                      <div className="space-y-1">
-                        <label className="text-slate-500 uppercase tracking-wider text-[10px]">Número de Factura</label>
-                        <input
-                          type="text"
-                          placeholder="Ej: FAC-001294"
-                          value={repForm.num_factura}
-                          onChange={(e) => setRepForm(prev => ({ ...prev, num_factura: e.target.value }))}
-                          className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-slate-900 font-semibold focus:ring-2 focus:ring-indigo-500 text-xs"
-                        />
-                      </div>
-
-                      {/* Receiving branch */}
-                      <div className="space-y-1">
-                        <label className="text-slate-500 uppercase tracking-wider text-[10px]">Sucursal Receptora</label>
-                        <select
-                          value={sessionUser?.sucursal === 'Montevideo' ? 'Mvd' : repForm.sucursal}
-                          disabled={sessionUser?.sucursal === 'Montevideo'}
-                          onChange={(e) => setRepForm(prev => ({ ...prev, sucursal: e.target.value as 'Mvd' | 'Pin' }))}
-                          className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-slate-900 font-semibold focus:ring-2 focus:ring-indigo-500 text-xs disabled:bg-slate-50"
-                        >
-                          {sessionUser?.sucursal !== 'Montevideo' && <option value="Pin">Pinamar (Depósito Principal)</option>}
-                          <option value="Mvd">Montevideo</option>
-                        </select>
-                      </div>
-
-                      {/* Operator User */}
-                      <div className="space-y-1">
-                        <label className="text-slate-500 uppercase tracking-wider text-[10px]">Usuario Responsable</label>
-                        <input
-                          type="text"
-                          required
-                          disabled
-                          value={sessionUser?.usuario || repForm.usuario}
-                          className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-500 font-semibold text-xs"
-                        />
-                      </div>
-
-                      {/* Total Factura Manual Input */}
-                      <div className="space-y-1">
-                        <label className="text-indigo-600 font-bold uppercase tracking-wider text-[10px] block">Total de Factura ($)</label>
-                        <input
-                          type="number"
-                          step="0.01"
-                          min="0"
-                          required
-                          placeholder="Ej: 1078.80"
-                          value={repForm.total_factura || ''}
-                          onChange={(e) => setRepForm(prev => ({ ...prev, total_factura: parseFloat(e.target.value) || 0 }))}
-                          className="w-full bg-indigo-50/50 border border-indigo-200 rounded-xl px-3 py-2 text-slate-950 font-bold focus:ring-2 focus:ring-indigo-550 text-xs font-mono"
-                        />
-                      </div>
-
-                      {/* Uruguayan Tax Breakdown Card */}
-                      <div className="md:col-span-2 bg-slate-100/55 border border-slate-200 p-3 rounded-xl space-y-2">
-                        <label className="text-slate-550 uppercase tracking-wider text-[10px] block font-bold leading-none">
-                          Liquidación de Factura (Uruguay)
-                        </label>
-                        {(() => {
-                          const totalConIva = Number(repForm.total_factura || 0);
-                          const totalNeto = repForm.detalles.reduce((acc, d) => acc + (Number(d.cantidad || 0) * Number(d.costo_unitario || 0)), 0);
-                          const totalIva = totalConIva - totalNeto;
-
-                          return (
-                            <div className="grid grid-cols-3 gap-2 text-center text-[10px] font-mono font-bold text-slate-700">
-                              <div className="bg-white border border-slate-150 p-1.5 rounded-lg flex flex-col justify-center">
-                                <span className="block text-[7px] text-slate-400 font-sans uppercase">Subtotal Neto</span>
-                                <span className="text-slate-800 text-[11px]">${totalNeto.toLocaleString("es-UY", { minimumFractionDigits: 1, maximumFractionDigits: 1 })}</span>
-                              </div>
-                              <div className="bg-white border border-slate-150 p-1.5 rounded-lg flex flex-col justify-center">
-                                <span className="block text-[7px] text-slate-400 font-sans uppercase">IVA Total</span>
-                                <span className="text-indigo-600 text-[11px]">${totalIva.toLocaleString("es-UY", { minimumFractionDigits: 1, maximumFractionDigits: 1 })}</span>
-                              </div>
-                              <div className="bg-indigo-50/50 border border-indigo-150 p-1.5 rounded-lg flex flex-col justify-center">
-                                <span className="block text-[7px] text-indigo-500 font-sans uppercase">Total Factura</span>
-                                <span className="text-indigo-900 font-black text-[11px]">${totalConIva.toLocaleString("es-UY", { minimumFractionDigits: 1, maximumFractionDigits: 1 })}</span>
-                              </div>
-                            </div>
-                          );
-                        })()}
-                      </div>
-                    </div>
-
-                    {/* Observations */}
-                    <div className="space-y-1 pt-1">
-                      <label className="text-slate-500 uppercase tracking-wider text-[10px]">Observaciones / Comentarios</label>
-                      <textarea
-                        rows={2}
-                        placeholder="Escribe notas relevantes de la entrega, bache o transporte..."
-                        value={repForm.observaciones}
-                        onChange={(e) => setRepForm(prev => ({ ...prev, observaciones: e.target.value }))}
-                        className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-slate-900 font-semibold focus:ring-2 focus:ring-indigo-500 text-xs text-left"
-                      />
+                      {/* Step 3 button */}
+                      <button
+                        type="button"
+                        onClick={() => setRepStep(3)}
+                        className="relative z-10 flex flex-col items-center gap-1 group focus:outline-none cursor-pointer"
+                      >
+                        <div className={`w-7 h-7 rounded-full flex items-center justify-center font-bold text-xs transition-all duration-300 ${
+                          repStep >= 3 ? 'bg-indigo-600 text-white shadow-md shadow-indigo-100' : 'bg-slate-200 text-slate-500'
+                        }`}>
+                          3
+                        </div>
+                        <span className={`text-[9px] uppercase font-bold tracking-wider transition-colors ${
+                          repStep === 3 ? 'text-indigo-600 font-extrabold' : 'text-slate-400'
+                        }`}>3. Registro</span>
+                      </button>
                     </div>
                   </div>
 
-                  {/* COMPOSER WIDGET FOR REPOSICION DETAIL ITEMS (Add to detail list) */}
-                  <div className="p-4 border border-indigo-100 rounded-xl bg-indigo-50/20 space-y-4">
-                    <div className="flex items-center justify-between">
-                      <p className="text-[10px] font-bold text-indigo-600 uppercase tracking-widest flex items-center gap-1">
-                        <span className="w-1.5 h-1.5 rounded-full bg-indigo-600"></span>
-                        <span>2. Añadir Producto al Detalle</span>
-                      </p>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setQuickCreateRepForm({
-                            codigo: getNextAvailableSku(),
-                            nombre: '',
-                            costo: '',
-                            precio_venta: '',
-                            imagen_url: ''
-                          });
-                          setQuickCreateRepError('');
-                          setQuickCreateRepSuccess('');
-                          setIsQuickCreateRepModalOpen(true);
-                        }}
-                        className="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-[10px] font-bold flex items-center gap-1 shadow-xs transition-all cursor-pointer"
-                      >
-                        <Plus className="w-3.5 h-3.5" />
-                        <span>Crear Artículo Nuevo</span>
-                      </button>
-                    </div>
+                  {/* STEP 1: CABECERA */}
+                  {repStep === 1 && (
+                    <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-250">
+                      {/* CABECERA (Header Data) */}
+                      <div className="bg-slate-50 p-4 rounded-xl border border-slate-150 space-y-4">
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-200 pb-2">
+                          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1">
+                            <span className="w-1.5 h-1.5 rounded-full bg-slate-400"></span>
+                            <span>Datos Generales del Comprobante</span>
+                          </p>
 
-                    <div className="grid grid-cols-1 md:grid-cols-4 gap-3.5 items-end">
-                      {/* Product Selector */}
-                      <div className="md:col-span-2 space-y-1 relative">
-                        <label className="text-slate-500 uppercase tracking-wider text-[9px] block">Seleccionar Artículo (*)</label>
-                        
-                        {repDetailComposer.articulo_id ? (
-                          (() => {
-                            const targetArt = catalog.find(x => x.id === Number(repDetailComposer.articulo_id));
-                            if (!targetArt) return null;
-                            return (
-                              <div className="flex items-center gap-3 bg-white p-2 border border-slate-200 rounded-xl h-[38px]">
-                                {targetArt.imagen_url ? (
-                                  <img
-                                    src={targetArt.imagen_url}
-                                    alt={targetArt.nombre}
-                                    referrerPolicy="no-referrer"
-                                    className="w-7 h-7 rounded-lg object-cover bg-slate-100 flex-shrink-0"
-                                  />
-                                ) : (
-                                  <div className="w-7 h-7 rounded-lg bg-slate-100 flex items-center justify-center flex-shrink-0">
-                                    <ImageIcon className="w-4 h-4 text-slate-400" />
-                                  </div>
-                                )}
-                                <div className="min-w-0 flex-grow text-left">
-                                  <div className="text-slate-900 font-bold text-[11px] truncate leading-tight">{targetArt.nombre}</div>
-                                  <div className="text-[9px] text-slate-400 font-mono leading-none">
-                                    SKU: {targetArt.codigo} · Costo: ${targetArt.costo}
-                                  </div>
-                                </div>
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setRepDetailComposer(prev => ({ ...prev, articulo_id: '' }));
-                                    setRepSearchText('');
-                                  }}
-                                  className="px-2 py-1 text-[9px] font-bold text-red-650 hover:bg-red-50 rounded-lg border border-red-100 transition-colors cursor-pointer shrink-0"
-                                >
-                                  Cambiar
-                                </button>
-                              </div>
-                            );
-                          })()
-                        ) : (
-                          <div className="relative">
-                            <Search className="absolute left-3 top-2.5 w-3.5 h-3.5 text-slate-400" />
+                          <div className="flex items-center gap-1 bg-indigo-50/50 px-2 py-0.5 rounded-lg border border-indigo-100">
+                            <span className="w-1.5 h-1.5 bg-indigo-500 rounded-full animate-pulse"></span>
+                            <span className="text-[9px] text-indigo-700 font-bold uppercase tracking-wider">Lector de Factura IA Activado</span>
+                          </div>
+                        </div>
+
+                        {/* Gemini AI Invoice scanner upload container */}
+                        <div className="bg-gradient-to-br from-indigo-50/40 to-slate-50 border border-dashed border-indigo-200/80 p-4 rounded-xl flex flex-col md:flex-row items-center justify-between gap-4 shadow-sm">
+                          <div className="space-y-1 text-center md:text-left">
+                            <div className="flex items-center justify-center md:justify-start gap-1.5 text-indigo-700 font-bold">
+                              <Sparkles className="w-4 h-4 animate-pulse shrink-0" />
+                              <span className="tracking-tight text-xs">Carga Inteligente por Foto de Factura</span>
+                            </div>
+                            <p className="text-[11px] text-slate-500 max-w-lg font-sans leading-relaxed">
+                              Saca una foto desde tu celular o sube una imagen de la factura. Nuestra IA con Gemini procesará montos totales, fecha, proveedor y autocompletará la planilla de bache y catálogo vinculada.
+                            </p>
+                          </div>
+
+                          <div className="relative shrink-0">
                             <input
-                              type="text"
-                              placeholder="Filtra SKU o Nombre..."
-                              value={repSearchText}
-                              onChange={(e) => {
-                                setRepSearchText(e.target.value);
-                                setRepSelectorFocused(true);
-                              }}
-                              onFocus={() => setRepSelectorFocused(true)}
-                              className="w-full bg-white border border-slate-200 rounded-xl pl-8.5 pr-4 py-1.5 text-slate-900 font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500 text-xs h-[38px]"
+                              id="ai-invoice-scanner-input"
+                              type="file"
+                              accept="image/*"
+                              className="hidden"
+                              onChange={handleInvoiceFileChange}
+                              disabled={isParsingInvoice}
                             />
-                            
-                            {repSelectorFocused && (
-                              <div className="absolute z-20 left-0 right-0 mt-1.5 max-h-48 overflow-y-auto bg-white border border-slate-200 rounded-xl shadow-lg divide-y divide-slate-100">
-                                <div className="flex items-center justify-between px-3 py-1.5 bg-slate-50 text-[10px] text-slate-400 font-semibold sticky top-0">
-                                  <span>Resultados del catálogo</span>
-                                  <button 
-                                    type="button" 
-                                    onClick={() => setRepSelectorFocused(false)}
-                                    className="hover:text-slate-700 font-bold text-xs font-sans p-0.5"
-                                  >
-                                    Cerrar ×
-                                  </button>
-                                </div>
+                            <label
+                              htmlFor="ai-invoice-scanner-input"
+                              className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-black cursor-pointer transition-all ${
+                                isParsingInvoice
+                                  ? 'bg-slate-200 text-slate-400 cursor-not-allowed shadow-none'
+                                  : 'bg-indigo-600 text-white hover:bg-indigo-700 shadow-md hover:shadow-indigo-100/50'
+                              }`}
+                            >
+                              <Sparkles className="w-4 h-4" />
+                              <span>{isParsingInvoice ? "Analizando Factura..." : "Tomar Foto / Subir Factura"}</span>
+                            </label>
+                          </div>
+                        </div>
 
-                                {(() => {
-                                  const filteredOptions = catalog
-                                    .filter(art => art.tipo === 'simple')
-                                    .filter(art => matchAdvancedSearch([art.nombre, art.codigo], repSearchText));
-                                  
-                                  if (filteredOptions.length === 0) {
-                                    return (
-                                      <div className="p-4 text-center text-slate-400 text-xs font-mono">
-                                        No se encontraron artículos simples.
-                                      </div>
-                                    );
-                                  }
-                                  
-                                  return filteredOptions.slice(0, 15).map(art => (
-                                    <button
-                                      key={`rep_drop_art_${art.id}`}
-                                      type="button"
-                                      onClick={() => {
-                                        setRepDetailComposer(prev => ({
-                                          ...prev,
-                                          articulo_id: String(art.id),
-                                          costo_unitario: art.costo || 0,
-                                          precio_sugerido: art.precio_venta || art.precio_venta_ml || 0
-                                        }));
-                                        setRepSearchText('');
-                                        setRepSelectorFocused(false);
-                                      }}
-                                      className="w-full text-left px-3 py-2 hover:bg-slate-50 flex items-center justify-between transition-colors text-xs font-semibold gap-2"
-                                    >
-                                      <div className="flex items-center gap-2 min-w-0">
-                                        {art.imagen_url ? (
-                                          <img
-                                            src={art.imagen_url}
-                                            alt={art.nombre}
-                                            referrerPolicy="no-referrer"
-                                            className="w-7 h-7 rounded object-cover bg-slate-100 flex-shrink-0"
-                                          />
-                                        ) : (
-                                          <div className="w-7 h-7 rounded bg-slate-100 flex items-center justify-center flex-shrink-0">
-                                            <ImageIcon className="w-3.5 h-3.5 text-slate-400" />
-                                          </div>
-                                        )}
-                                        <div className="truncate text-left">
-                                          <span className="block text-slate-900 font-bold truncate text-[11px] leading-tight">{art.nombre}</span>
-                                          <span className="block text-[9px] text-slate-400 font-mono leading-none">SKU: {art.codigo}</span>
-                                        </div>
-                                      </div>
-                                      <div className="text-right text-[9px] font-mono font-bold shrink-0 text-indigo-600 bg-indigo-50/55 px-1.5 py-0.5 rounded">
-                                        ${art.costo}
-                                      </div>
-                                    </button>
-                                  ));
-                                })()}
-                              </div>
-                            )}
+                        {isParsingInvoice && (
+                          <div className="bg-white border border-slate-150 p-6 rounded-xl flex flex-col items-center justify-center text-center space-y-3 animate-pulse">
+                            <RefreshCw className="w-8 h-8 text-indigo-600 animate-spin animate-infinite duration-1000" />
+                            <div className="space-y-1">
+                              <p className="text-xs font-black text-slate-800">Procesando Factura con Gemini 3.5 Flash</p>
+                              <p className="text-[10px] text-slate-500 max-w-sm font-sans leading-relaxed">
+                                Analizando estructura, montos y descripciones del documento. Buscando códigos SKU del catálogo para mapear automáticamente baches de entrada directos.
+                              </p>
+                            </div>
                           </div>
                         )}
+
+                        {parseInvoiceError && (
+                          <div className="bg-red-50 border border-red-200 p-3 rounded-xl flex items-center gap-2 text-red-700">
+                            <AlertCircle className="w-4 h-4 shrink-0" />
+                            <span className="text-[11px] font-sans font-medium">{parseInvoiceError}</span>
+                          </div>
+                        )}
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          {/* Date Field */}
+                          <div className="space-y-1">
+                            <label className="text-slate-500 uppercase tracking-wider text-[10px]">Fecha de Entrada</label>
+                            <input
+                              type="date"
+                              required
+                              value={repForm.fecha}
+                              onChange={(e) => setRepForm(prev => ({ ...prev, fecha: e.target.value }))}
+                              className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-slate-900 font-semibold focus:ring-2 focus:ring-indigo-500 text-xs"
+                            />
+                          </div>
+
+                          {/* Supplier Field */}
+                          <div className="space-y-1">
+                            <label className="text-slate-500 uppercase tracking-wider text-[10px]">Proveedor (*)</label>
+                            <input
+                              type="text"
+                              required
+                              placeholder="Ej: Mayorista Fundas Inc."
+                              value={repForm.proveedor}
+                              onChange={(e) => setRepForm(prev => ({ ...prev, proveedor: e.target.value }))}
+                              className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-slate-900 font-semibold focus:ring-2 focus:ring-indigo-500 text-xs"
+                            />
+                          </div>
+
+                          {/* Invoice number */}
+                          <div className="space-y-1">
+                            <label className="text-slate-500 uppercase tracking-wider text-[10px]">Número de Factura</label>
+                            <input
+                              type="text"
+                              placeholder="Ej: FAC-001294"
+                              value={repForm.num_factura}
+                              onChange={(e) => setRepForm(prev => ({ ...prev, num_factura: e.target.value }))}
+                              className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-slate-900 font-semibold focus:ring-2 focus:ring-indigo-500 text-xs"
+                            />
+                          </div>
+
+                          {/* Receiving branch */}
+                          <div className="space-y-1">
+                            <label className="text-slate-500 uppercase tracking-wider text-[10px]">Sucursal Receptora</label>
+                            <select
+                              value={sessionUser?.sucursal === 'Montevideo' ? 'Mvd' : repForm.sucursal}
+                              disabled={sessionUser?.sucursal === 'Montevideo'}
+                              onChange={(e) => setRepForm(prev => ({ ...prev, sucursal: e.target.value as 'Mvd' | 'Pin' }))}
+                              className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-slate-900 font-semibold focus:ring-2 focus:ring-indigo-500 text-xs disabled:bg-slate-50"
+                            >
+                              {sessionUser?.sucursal !== 'Montevideo' && <option value="Pin">Pinamar (Depósito Principal)</option>}
+                              <option value="Mvd">Montevideo</option>
+                            </select>
+                          </div>
+
+                          {/* Operator User */}
+                          <div className="space-y-1">
+                            <label className="text-slate-500 uppercase tracking-wider text-[10px]">Usuario Responsable</label>
+                            <input
+                              type="text"
+                              required
+                              disabled
+                              value={sessionUser?.usuario || repForm.usuario}
+                              className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-500 font-semibold text-xs"
+                            />
+                          </div>
+
+                          {/* Total Factura Manual Input */}
+                          <div className="space-y-1">
+                            <label className="text-indigo-600 font-bold uppercase tracking-wider text-[10px] block">Total de Factura ($)</label>
+                            <input
+                              type="number"
+                              step="0.01"
+                              min="0"
+                              required
+                              placeholder="Ej: 1078.80"
+                              value={repForm.total_factura || ''}
+                              onChange={(e) => setRepForm(prev => ({ ...prev, total_factura: parseFloat(e.target.value) || 0 }))}
+                              className="w-full bg-indigo-50/50 border border-indigo-200 rounded-xl px-3 py-2 text-slate-950 font-bold focus:ring-2 focus:ring-indigo-550 text-xs font-mono"
+                            />
+                          </div>
+
+                          {/* Uruguayan Tax Breakdown Card */}
+                          <div className="md:col-span-2 bg-slate-100/55 border border-slate-200 p-3 rounded-xl space-y-2">
+                            <label className="text-slate-550 uppercase tracking-wider text-[10px] block font-bold leading-none">
+                              Liquidación de Factura (Uruguay)
+                            </label>
+                            {(() => {
+                              const totalConIva = Number(repForm.total_factura || 0);
+                              const totalNeto = repForm.detalles.reduce((acc, d) => acc + (Number(d.cantidad || 0) * Number(d.costo_unitario || 0)), 0);
+                              const totalIva = totalConIva - totalNeto;
+
+                              return (
+                                <div className="grid grid-cols-3 gap-2 text-center text-[10px] font-mono font-bold text-slate-700">
+                                  <div className="bg-white border border-slate-150 p-1.5 rounded-lg flex flex-col justify-center">
+                                    <span className="block text-[7px] text-slate-400 font-sans uppercase">Subtotal Neto</span>
+                                    <span className="text-slate-800 text-[11px]">${totalNeto.toLocaleString("es-UY", { minimumFractionDigits: 1, maximumFractionDigits: 1 })}</span>
+                                  </div>
+                                  <div className="bg-white border border-slate-150 p-1.5 rounded-lg flex flex-col justify-center">
+                                    <span className="block text-[7px] text-slate-400 font-sans uppercase">IVA Total</span>
+                                    <span className="text-indigo-600 text-[11px]">${totalIva.toLocaleString("es-UY", { minimumFractionDigits: 1, maximumFractionDigits: 1 })}</span>
+                                  </div>
+                                  <div className="bg-indigo-50/50 border border-indigo-150 p-1.5 rounded-lg flex flex-col justify-center">
+                                    <span className="block text-[7px] text-indigo-500 font-sans uppercase">Total Factura</span>
+                                    <span className="text-indigo-900 font-black text-[11px]">${totalConIva.toLocaleString("es-UY", { minimumFractionDigits: 1, maximumFractionDigits: 1 })}</span>
+                                  </div>
+                                </div>
+                              );
+                            })()}
+                          </div>
+                        </div>
+
+                        {/* Observations */}
+                        <div className="space-y-1 pt-1">
+                          <label className="text-slate-500 uppercase tracking-wider text-[10px]">Observaciones / Comentarios</label>
+                          <textarea
+                            rows={2}
+                            placeholder="Escribe notas relevantes de la entrega, bache o transporte..."
+                            value={repForm.observaciones}
+                            onChange={(e) => setRepForm(prev => ({ ...prev, observaciones: e.target.value }))}
+                            className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-slate-900 font-semibold focus:ring-2 focus:ring-indigo-500 text-xs text-left"
+                          />
+                        </div>
                       </div>
 
-                      {/* Quantity input */}
-                      <div className="space-y-1">
-                        <label className="text-slate-500 uppercase tracking-wider text-[9px] block">Cantidad simple</label>
-                        <input
-                          type="number"
-                          min="1"
-                          value={repDetailComposer.cantidad}
-                          onChange={(e) => setRepDetailComposer(prev => ({ ...prev, cantidad: parseInt(e.target.value) || 1 }))}
-                          className="w-full bg-white border border-slate-200 rounded-xl px-2.5 py-1.5 text-slate-950 font-bold focus:ring-2 focus:ring-indigo-500 text-xs font-mono h-[38px]"
-                        />
-                      </div>
-
-                      {/* Modo IVA selection */}
-                      <div className="space-y-1">
-                        <label className="text-slate-500 uppercase tracking-wider text-[9px] block">Tratamiento de Costo</label>
-                        <select
-                          value={repDetailComposer.modo_iva}
-                          onChange={(e) => setRepDetailComposer(prev => ({ ...prev, modo_iva: e.target.value }))}
-                          className="w-full bg-white border border-slate-200 rounded-xl px-2.5 py-1.5 text-slate-900 font-semibold focus:ring-2 focus:ring-indigo-500 text-xs h-[38px] cursor-pointer"
-                        >
-                          <option value="con_iva">IVA Incluido (Final)</option>
-                          <option value="mas_iva">Sin IVA (Neto + IVA)</option>
-                        </select>
-                      </div>
-
-                      {/* Tasa IVA Selector */}
-                      <div className="space-y-1">
-                        <label className="text-slate-500 uppercase tracking-wider text-[9px] block">Tasa de IVA (Uruguay)</label>
-                        <select
-                          value={repDetailComposer.tipo_iva}
-                          onChange={(e) => setRepDetailComposer(prev => ({ ...prev, tipo_iva: e.target.value }))}
-                          className="w-full bg-white border border-slate-200 rounded-xl px-2.5 py-1.5 text-slate-900 font-semibold focus:ring-2 focus:ring-indigo-500 text-xs h-[38px] cursor-pointer"
-                        >
-                          <option value="22">22% (Tasa Básica)</option>
-                          <option value="10">10% (Tasa Mínima)</option>
-                          <option value="0">0% (Exento)</option>
-                        </select>
-                      </div>
-
-                      {/* Cost unit input */}
-                      <div className="space-y-1">
-                        <label className="text-slate-500 uppercase tracking-wider text-[9px] block">Costo unitario ($)</label>
-                        <input
-                          type="number"
-                          step="0.01"
-                          min="0"
-                          value={repDetailComposer.costo_unitario}
-                          onChange={(e) => setRepDetailComposer(prev => ({ ...prev, costo_unitario: e.target.value }))}
-                          className="w-full bg-white border border-slate-200 rounded-xl px-2.5 py-1.5 text-slate-950 font-bold focus:ring-2 focus:ring-indigo-500 text-xs font-mono h-[38px]"
-                        />
-                      </div>
-
-                      {/* Suggested Sell Price */}
-                      <div className="md:col-span-2 space-y-1">
-                        <label className="text-slate-500 uppercase tracking-wider text-[9px] block">
-                          Actualizar precio venta ($) <span className="font-mono text-[8px] text-slate-400 font-normal">(Sugerido)</span>
-                        </label>
-                        <input
-                          type="number"
-                          step="0.01"
-                          min="0"
-                          placeholder="Fijar nuevo precio"
-                          value={repDetailComposer.precio_sugerido}
-                          onChange={(e) => setRepDetailComposer(prev => ({ ...prev, precio_sugerido: e.target.value }))}
-                          className="w-full bg-white border border-slate-200 rounded-xl px-2.5 py-1.5 text-slate-950 font-medium focus:ring-2 focus:ring-indigo-500 text-xs font-mono h-[38px]"
-                        />
-                      </div>
-
-                      {/* LIVE BREAKDOWN FEEDBACK PREVIEW */}
-                      <div className="md:col-span-2 bg-slate-100/70 border border-slate-200 p-2.5 rounded-xl text-[10px] space-y-1.5 text-left h-[38px] flex flex-col justify-center">
-                        <span className="text-[8px] font-bold text-slate-400 uppercase tracking-wider block leading-none">Desglose Fiscal (Uruguay)</span>
-                        {(() => {
-                          const raw = Number(repDetailComposer.costo_unitario) || 0;
-                          const tIva = Number(repDetailComposer.tipo_iva);
-                          const mIva = repDetailComposer.modo_iva;
-                          let cn = 0; let iv = 0; let cg = 0;
-                          if (mIva === 'con_iva') {
-                            if (tIva === 22) { cn = raw / 1.22; iv = raw - cn; cg = raw; }
-                            else if (tIva === 10) { cn = raw / 1.10; iv = raw - cn; cg = raw; }
-                            else { cn = raw; iv = 0; cg = raw; }
-                          } else {
-                            if (tIva === 22) { cn = raw; iv = raw * 0.22; cg = raw + iv; }
-                            else if (tIva === 10) { cn = raw; iv = raw * 0.10; cg = raw + iv; }
-                            else { cn = raw; iv = 0; cg = raw; }
-                          }
-                          return (
-                            <div className="grid grid-cols-3 gap-2 font-mono font-bold text-slate-750 text-[10px] leading-tight">
-                              <div>Neto: <span className="text-slate-900">${cn.toFixed(1)}</span></div>
-                              <div>IVA: <span className="text-indigo-600">${iv.toFixed(1)}</span></div>
-                              <div>Costo Final: <span className="text-emerald-700">${cg.toFixed(1)}</span></div>
-                            </div>
-                          );
-                        })()}
-                      </div>
-
-                      {/* Trigger button */}
-                      <div className="md:col-span-4">
+                      {/* Step Footer Navigation */}
+                      <div className="flex justify-end pt-2">
                         <button
                           type="button"
-                          onClick={handleAddRepDetailItem}
-                          className="w-full py-2 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 border border-indigo-200 rounded-xl text-xs font-bold transition-colors cursor-pointer flex items-center justify-center gap-1.5"
+                          onClick={() => setRepStep(2)}
+                          className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl text-xs flex items-center gap-1.5 transition-all shadow-md shadow-indigo-600/10 cursor-pointer"
                         >
-                          <Plus className="w-3.5 h-3.5" />
-                          <span>Añadir İtem al Detalle con IVA</span>
+                          <span>Siguiente: Añadir Ítems</span>
+                          <ArrowRight className="w-3.5 h-3.5" />
                         </button>
                       </div>
                     </div>
-                  </div>
+                  )}
 
-                  {/* DETALLES TABLE */}
-                  <div className="space-y-2">
-                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1">
-                      <span className="w-1.5 h-1.5 rounded-full bg-slate-400"></span>
-                      <span>3. Resumen de Detalle ({repForm.detalles.length} filas)</span>
-                    </p>
+                  {/* STEP 2: AÑADIR PRODUCTOS AL DETALLE */}
+                  {repStep === 2 && (
+                    <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-250">
+                      {/* COMPOSER WIDGET FOR REPOSICION DETAIL ITEMS (Add to detail list) */}
+                      <div className="p-4 border border-indigo-100 rounded-xl bg-indigo-50/20 space-y-4">
+                        <div className="flex items-center justify-between">
+                          <p className="text-[10px] font-bold text-indigo-600 uppercase tracking-widest flex items-center gap-1">
+                            <span className="w-1.5 h-1.5 rounded-full bg-indigo-600"></span>
+                            <span>Especificación del Artículo y Costos</span>
+                          </p>
+                        </div>
 
-                     <div className="border border-slate-150 rounded-xl overflow-hidden bg-white overflow-x-auto">
-                      <table className="w-full text-left text-xs border-collapse min-w-[700px]">
-                        <thead>
-                          <tr className="bg-slate-50 border-b border-slate-150 text-[10px] text-slate-400 uppercase font-mono font-bold">
-                            <th className="p-2.5 pl-3">SKU</th>
-                            <th className="p-2.5">Producto</th>
-                            <th className="p-2.5 text-right">Cant</th>
-                            <th className="p-2.5 text-right">Costo Neto</th>
-                            <th className="p-2.5 text-center">IVA %</th>
-                            <th className="p-2.5 text-right">Imp. Neto</th>
-                            <th className="p-2.5 text-right">Monto IVA</th>
-                            <th className="p-2.5 text-right text-emerald-800 bg-emerald-50/40">Total c/IVA</th>
-                            <th className="p-2.5 pr-3 text-center">Acciones</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-100 font-semibold text-slate-705">
-                          {repForm.detalles.map((elem, idx) => {
-                            const costNeto = elem.costo_unitario || 0;
-                            const tIva = elem.tipo_iva !== undefined ? Number(elem.tipo_iva) : 22;
-                            const qty = Number(elem.cantidad || 0);
+                        <div className="grid grid-cols-1 md:grid-cols-4 gap-3.5 items-end">
+                          {/* Product Selector */}
+                          <div className="md:col-span-2 space-y-1">
+                            <label className="text-slate-500 uppercase tracking-wider text-[9px] block">Seleccionar Artículo (*)</label>
+                            <input
+                              type="text"
+                              placeholder="Escribe el título del artículo tal como lo indica el proveedor..."
+                              value={repDetailComposer.nombre}
+                              onChange={(e) => setRepDetailComposer(prev => ({ ...prev, nombre: e.target.value }))}
+                              className="w-full bg-white border border-slate-200 rounded-xl px-3 py-1.5 text-slate-900 font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500 text-xs h-[38px] text-left"
+                            />
+                          </div>
 
-                            // Calculate fallback fields for old records
-                            let ivaUnit = elem.iva_unitario !== undefined ? Number(elem.iva_unitario) : 0;
-                            let costConIva = elem.costo_con_iva !== undefined ? Number(elem.costo_con_iva) : costNeto;
+                          {/* Quantity input */}
+                          <div className="space-y-1">
+                            <label className="text-slate-500 uppercase tracking-wider text-[9px] block">Cantidad simple</label>
+                            <input
+                              type="number"
+                              min="1"
+                              value={repDetailComposer.cantidad}
+                              onChange={(e) => setRepDetailComposer(prev => ({ ...prev, cantidad: parseInt(e.target.value) || 1 }))}
+                              className="w-full bg-white border border-slate-200 rounded-xl px-2.5 py-1.5 text-slate-950 font-bold focus:ring-2 focus:ring-indigo-500 text-xs font-mono h-[38px]"
+                            />
+                          </div>
 
-                            if (elem.iva_unitario === undefined) {
-                              if (tIva === 22) {
-                                ivaUnit = costNeto * 0.22;
-                                costConIva = costNeto + ivaUnit;
-                              } else if (tIva === 10) {
-                                ivaUnit = costNeto * 0.10;
-                                costConIva = costNeto + ivaUnit;
+                          {/* Modo IVA selection */}
+                          <div className="space-y-1">
+                            <label className="text-slate-500 uppercase tracking-wider text-[9px] block">Tratamiento de Costo</label>
+                            <select
+                              value={repDetailComposer.modo_iva}
+                              onChange={(e) => setRepDetailComposer(prev => ({ ...prev, modo_iva: e.target.value }))}
+                              className="w-full bg-white border border-slate-200 rounded-xl px-2.5 py-1.5 text-slate-900 font-semibold focus:ring-2 focus:ring-indigo-500 text-xs h-[38px] cursor-pointer"
+                            >
+                              <option value="con_iva">IVA Incluido (Final)</option>
+                              <option value="mas_iva">Sin IVA (Neto + IVA)</option>
+                            </select>
+                          </div>
+
+                          {/* Tasa IVA Selector */}
+                          <div className="space-y-1">
+                            <label className="text-slate-500 uppercase tracking-wider text-[9px] block">Tasa de IVA (Uruguay)</label>
+                            <select
+                              value={repDetailComposer.tipo_iva}
+                              onChange={(e) => setRepDetailComposer(prev => ({ ...prev, tipo_iva: e.target.value }))}
+                              className="w-full bg-white border border-slate-200 rounded-xl px-2.5 py-1.5 text-slate-900 font-semibold focus:ring-2 focus:ring-indigo-500 text-xs h-[38px] cursor-pointer"
+                            >
+                              <option value="22">22% (Tasa Básica)</option>
+                              <option value="10">10% (Tasa Mínima)</option>
+                              <option value="0">0% (Exento)</option>
+                            </select>
+                          </div>
+
+                          {/* Cost unit input */}
+                          <div className="space-y-1">
+                            <label className="text-slate-500 uppercase tracking-wider text-[9px] block">Costo unitario ($)</label>
+                            <input
+                              type="number"
+                              step="0.01"
+                              min="0"
+                              value={repDetailComposer.costo_unitario}
+                              onChange={(e) => setRepDetailComposer(prev => ({ ...prev, costo_unitario: e.target.value }))}
+                              className="w-full bg-white border border-slate-200 rounded-xl px-2.5 py-1.5 text-slate-950 font-bold focus:ring-2 focus:ring-indigo-500 text-xs font-mono h-[38px]"
+                            />
+                          </div>
+
+                          {/* Suggested Sell Price */}
+                          <div className="md:col-span-2 space-y-1">
+                            <label className="text-slate-500 uppercase tracking-wider text-[9px] block">
+                              Actualizar precio venta ($) <span className="font-mono text-[8px] text-slate-400 font-normal">(Sugerido)</span>
+                            </label>
+                            <input
+                              type="number"
+                              step="0.01"
+                              min="0"
+                              placeholder="Fijar nuevo precio"
+                              value={repDetailComposer.precio_sugerido}
+                              onChange={(e) => setRepDetailComposer(prev => ({ ...prev, precio_sugerido: e.target.value }))}
+                              className="w-full bg-white border border-slate-200 rounded-xl px-2.5 py-1.5 text-slate-950 font-medium focus:ring-2 focus:ring-indigo-500 text-xs font-mono h-[38px]"
+                            />
+                          </div>
+
+                          {/* LIVE BREAKDOWN FEEDBACK PREVIEW */}
+                          <div className="md:col-span-2 bg-slate-100/70 border border-slate-200 p-2.5 rounded-xl text-[10px] space-y-1.5 text-left h-[38px] flex flex-col justify-center">
+                            <span className="text-[8px] font-bold text-slate-400 uppercase tracking-wider block leading-none">Desglose Fiscal (Uruguay)</span>
+                            {(() => {
+                              const raw = Number(repDetailComposer.costo_unitario) || 0;
+                              const tIva = Number(repDetailComposer.tipo_iva);
+                              const mIva = repDetailComposer.modo_iva;
+                              let cn = 0; let iv = 0; let cg = 0;
+                              if (mIva === 'con_iva') {
+                                if (tIva === 22) { cn = raw / 1.22; iv = raw - cn; cg = raw; }
+                                else if (tIva === 10) { cn = raw / 1.10; iv = raw - cn; cg = raw; }
+                                else { cn = raw; iv = 0; cg = raw; }
                               } else {
-                                ivaUnit = 0;
-                                costConIva = costNeto;
+                                if (tIva === 22) { cn = raw; iv = raw * 0.22; cg = raw + iv; }
+                                else if (tIva === 10) { cn = raw; iv = raw * 0.10; cg = raw + iv; }
+                                else { cn = raw; iv = 0; cg = raw; }
                               }
-                            }
+                              return (
+                                <div className="grid grid-cols-3 gap-2 font-mono font-bold text-slate-750 text-[10px] leading-tight">
+                                  <div>Neto: <span className="text-slate-900">${cn.toFixed(1)}</span></div>
+                                  <div>IVA: <span className="text-indigo-600">${iv.toFixed(1)}</span></div>
+                                  <div>Costo Final: <span className="text-emerald-700">${cg.toFixed(1)}</span></div>
+                                </div>
+                              );
+                            })()}
+                          </div>
 
-                            const totNeto = costNeto * qty;
-                            const totIva = ivaUnit * qty;
-                            const totConIva = costConIva * qty;
+                          {/* Trigger button */}
+                          <div className="md:col-span-4">
+                            <button
+                              type="button"
+                              onClick={handleAddRepDetailItem}
+                              className="w-full py-2 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 border border-indigo-200 rounded-xl text-xs font-bold transition-colors cursor-pointer flex items-center justify-center gap-1.5"
+                            >
+                              <Plus className="w-3.5 h-3.5" />
+                              <span>Añadir Ítem al Detalle con IVA</span>
+                            </button>
+                          </div>
+                        </div>
+                      </div>
 
-                            return (
-                              <tr key={`draft_detail_${idx}`} className="hover:bg-slate-50/50">
-                                <td className="p-2.5 pl-3 font-mono text-indigo-650 font-bold">{elem.codigo}</td>
-                                <td className="p-2.5 max-w-[150px] truncate">{elem.nombre}</td>
-                                <td className="p-2.5 text-right w-[95px]">
-                                  <input
-                                    type="number"
-                                    min="1"
-                                    step="1"
-                                    value={qty}
-                                    onChange={(e) => handleUpdateRepDetailItem(idx, 'cantidad', Math.max(1, parseInt(e.target.value) || 1))}
-                                    className="w-full text-right px-2 py-1 border border-slate-200 rounded-lg bg-indigo-50/35 font-mono font-black text-slate-950 focus:bg-white focus:ring-2 focus:ring-indigo-400 focus:outline-none"
-                                  />
-                                </td>
-                                <td className="p-2.5 text-right w-[125px]">
-                                  <div className="flex items-center gap-1 justify-end">
-                                    <span className="text-slate-400 font-mono text-[10px] font-normal">$</span>
-                                    <input
-                                      type="number"
-                                      min="0"
-                                      step="0.01"
-                                      value={costNeto}
-                                      onChange={(e) => handleUpdateRepDetailItem(idx, 'costo_unitario', Math.max(0, parseFloat(e.target.value) || 0))}
-                                      className="w-full text-right px-2 py-1 border border-slate-200 rounded-lg bg-indigo-50/35 font-mono font-black text-slate-800 focus:bg-white focus:ring-2 focus:ring-indigo-400 focus:outline-none"
-                                    />
-                                  </div>
-                                </td>
-                                <td className="p-2.5 text-center font-mono">
-                                  <span className={`text-[9px] px-1.5 py-0.5 rounded font-black ${
-                                    tIva === 22 ? 'bg-indigo-50 text-indigo-700' :
-                                    tIva === 10 ? 'bg-amber-50 text-amber-700' : 'bg-slate-100 text-slate-505'
-                                  }`}>
-                                    {tIva}%
-                                  </span>
-                                </td>
-                                <td className="p-2.5 text-right font-mono text-slate-600">${totNeto.toFixed(1)}</td>
-                                <td className="p-2.5 text-right font-mono text-indigo-600">${totIva.toFixed(1)}</td>
-                                <td className="p-2.5 text-right font-mono text-emerald-700 font-bold bg-emerald-50/15">${totConIva.toFixed(1)}</td>
-                                <td className="p-2.5 text-center pr-3">
-                                  <button
-                                    type="button"
-                                    onClick={() => handleRemoveRepDetailItem(idx)}
-                                    className="text-[10px] text-red-650 hover:text-red-900 hover:bg-red-50 px-1.5 py-1 rounded transition-all cursor-pointer font-bold border border-transparent hover:border-red-100"
-                                  >
-                                    Quitar
-                                  </button>
-                                </td>
-                              </tr>
-                            );
-                          })}
+                      {/* Display warning if details is empty */}
+                      {repForm.detalles.length === 0 ? (
+                        <div className="p-4 bg-amber-50 border border-amber-200 text-amber-900 text-[11px] rounded-xl font-medium">
+                          ⚠️ Aún no has añadido artículos al detalle. Escribe el título de un artículo y pulsa el botón "Añadir Ítem al Detalle con IVA" para agregarlo.
+                        </div>
+                      ) : (
+                        <div className="p-4 bg-emerald-50 border border-emerald-150 text-emerald-900 text-[11px] rounded-xl font-medium flex items-center justify-between">
+                          <span>✅ Detalle actual contiene {repForm.detalles.length} artículo(s).</span>
+                          <button
+                            type="button"
+                            onClick={() => setRepStep(3)}
+                            className="text-indigo-700 hover:underline font-bold"
+                          >
+                            Ver Resumen en Paso 3 →
+                          </button>
+                        </div>
+                      )}
 
-                          {repForm.detalles.length === 0 && (
-                            <tr>
-                              <td colSpan={9} className="p-8 text-center text-slate-400 font-mono text-[11px] italic">
-                                El detalle de reposición está vacío. Usa la sección superior para añadir ítems recibidos.
-                              </td>
-                            </tr>
-                          )}
-                        </tbody>
-                      </table>
+                      {/* Step Footer Navigation */}
+                      <div className="flex items-center justify-between pt-2">
+                        <button
+                          type="button"
+                          onClick={() => setRepStep(1)}
+                          className="px-4 py-2 border border-slate-200 text-slate-600 font-bold rounded-xl text-xs flex items-center gap-1.5 transition-all hover:bg-slate-50 cursor-pointer"
+                        >
+                          <ArrowLeft className="w-3.5 h-3.5" />
+                          <span>Volver a Cabecera</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => setRepStep(3)}
+                          className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl text-xs flex items-center gap-1.5 transition-all shadow-md shadow-indigo-600/10 cursor-pointer"
+                        >
+                          <span>Siguiente: Ver Resumen y Registrar</span>
+                          <ArrowRight className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
                     </div>
-                  </div>
+                  )}
 
-                  {/* TRIGGER CONTROLS: ACTUALIZAR STOCK, COSTOS, ENVIAR AUDITORIA CHECKBOXES */}
-                  <div className="bg-slate-50 p-4 border border-slate-200 rounded-xl grid grid-cols-1 md:grid-cols-2 gap-3">
-                    <label className="flex items-center gap-2 cursor-pointer py-1 select-none">
-                      <input
-                        type="checkbox"
-                        checked={repForm.actualizar_stock}
-                        onChange={(e) => setRepForm(prev => ({ ...prev, actualizar_stock: e.target.checked }))}
-                        className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 border-slate-300"
-                      />
-                      <div className="text-left leading-normal">
-                        <span className="block text-xs font-bold text-slate-800">Actualizar stock físico</span>
-                        <span className="block text-[10px] text-slate-400">Sumar automáticamente cantidad al depósito destino</span>
+                  {/* STEP 3: RESUMEN Y REGISTRO */}
+                  {repStep === 3 && (
+                    <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-250">
+                      {/* DETALLES TABLE */}
+                      <div className="space-y-2">
+                        <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1">
+                          <span className="w-1.5 h-1.5 rounded-full bg-slate-400"></span>
+                          <span>Artículos Añadidos a la Factura ({repForm.detalles.length} filas)</span>
+                        </p>
+
+                        <div className="border border-slate-150 rounded-xl overflow-hidden bg-white overflow-x-auto">
+                          <table className="w-full text-left text-xs border-collapse min-w-[700px]">
+                            <thead>
+                              <tr className="bg-slate-50 border-b border-slate-150 text-[10px] text-slate-400 uppercase font-mono font-bold">
+                                <th className="p-2.5 pl-3">SKU</th>
+                                <th className="p-2.5">Producto</th>
+                                <th className="p-2.5 text-right">Cant</th>
+                                <th className="p-2.5 text-right">Costo Neto</th>
+                                <th className="p-2.5 text-center">IVA %</th>
+                                <th className="p-2.5 text-right">Imp. Neto</th>
+                                <th className="p-2.5 text-right">Monto IVA</th>
+                                <th className="p-2.5 text-right text-emerald-800 bg-emerald-50/40">Total c/IVA</th>
+                                <th className="p-2.5 pr-3 text-center">Acciones</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100 font-semibold text-slate-705">
+                              {repForm.detalles.map((elem, idx) => {
+                                const costNeto = elem.costo_unitario || 0;
+                                const tIva = elem.tipo_iva !== undefined ? Number(elem.tipo_iva) : 22;
+                                const qty = Number(elem.cantidad || 0);
+
+                                // Calculate fallback fields for old records
+                                let ivaUnit = elem.iva_unitario !== undefined ? Number(elem.iva_unitario) : 0;
+                                let costConIva = elem.costo_con_iva !== undefined ? Number(elem.costo_con_iva) : costNeto;
+
+                                if (elem.iva_unitario === undefined) {
+                                  if (tIva === 22) {
+                                    ivaUnit = costNeto * 0.22;
+                                    costConIva = costNeto + ivaUnit;
+                                  } else if (tIva === 10) {
+                                    ivaUnit = costNeto * 0.10;
+                                    costConIva = costNeto + ivaUnit;
+                                  } else {
+                                    ivaUnit = 0;
+                                    costConIva = costNeto;
+                                  }
+                                }
+
+                                const totNeto = costNeto * qty;
+                                const totIva = ivaUnit * qty;
+                                const totConIva = costConIva * qty;
+
+                                return (
+                                  <tr key={`draft_detail_${idx}`} className="hover:bg-slate-50/50">
+                                    <td className="p-2.5 pl-3 font-mono text-indigo-650 font-bold">{elem.codigo}</td>
+                                    <td className="p-2.5 max-w-[150px] truncate">{elem.nombre}</td>
+                                    <td className="p-2.5 text-right w-[95px]">
+                                      <input
+                                        type="number"
+                                        min="1"
+                                        step="1"
+                                        value={qty}
+                                        onChange={(e) => handleUpdateRepDetailItem(idx, 'cantidad', Math.max(1, parseInt(e.target.value) || 1))}
+                                        className="w-full text-right px-2 py-1 border border-slate-200 rounded-lg bg-indigo-50/35 font-mono font-black text-slate-950 focus:bg-white focus:ring-2 focus:ring-indigo-400 focus:outline-none"
+                                      />
+                                    </td>
+                                    <td className="p-2.5 text-right w-[125px]">
+                                      <div className="flex items-center gap-1 justify-end">
+                                        <span className="text-slate-400 font-mono text-[10px] font-normal">$</span>
+                                        <input
+                                          type="number"
+                                          min="0"
+                                          step="0.01"
+                                          value={costNeto}
+                                          onChange={(e) => handleUpdateRepDetailItem(idx, 'costo_unitario', Math.max(0, parseFloat(e.target.value) || 0))}
+                                          className="w-full text-right px-2 py-1 border border-slate-200 rounded-lg bg-indigo-50/35 font-mono font-black text-slate-800 focus:bg-white focus:ring-2 focus:ring-indigo-400 focus:outline-none"
+                                        />
+                                      </div>
+                                    </td>
+                                    <td className="p-2.5 text-center font-mono">
+                                      <span className={`text-[9px] px-1.5 py-0.5 rounded font-black ${
+                                        tIva === 22 ? 'bg-indigo-50 text-indigo-700' :
+                                        tIva === 10 ? 'bg-amber-50 text-amber-700' : 'bg-slate-100 text-slate-505'
+                                      }`}>
+                                        {tIva}%
+                                      </span>
+                                    </td>
+                                    <td className="p-2.5 text-right font-mono text-slate-600">${totNeto.toFixed(1)}</td>
+                                    <td className="p-2.5 text-right font-mono text-indigo-600">${totIva.toFixed(1)}</td>
+                                    <td className="p-2.5 text-right font-mono text-emerald-700 font-bold bg-emerald-50/15">${totConIva.toFixed(1)}</td>
+                                    <td className="p-2.5 text-center pr-3">
+                                      <button
+                                        type="button"
+                                        onClick={() => handleRemoveRepDetailItem(idx)}
+                                        className="text-[10px] text-red-650 hover:text-red-900 hover:bg-red-50 px-1.5 py-1 rounded transition-all cursor-pointer font-bold border border-transparent hover:border-red-100"
+                                      >
+                                        Quitar
+                                      </button>
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+
+                              {repForm.detalles.length === 0 && (
+                                <tr>
+                                  <td colSpan={9} className="p-8 text-center text-slate-400 font-mono text-[11px] italic">
+                                    El detalle de reposición está vacío. Usa la pestaña anterior para añadir ítems recibidos.
+                                  </td>
+                                </tr>
+                              )}
+                            </tbody>
+                          </table>
+                        </div>
                       </div>
-                    </label>
 
-                    <label className="flex items-center gap-2 cursor-pointer py-1 select-none">
-                      <input
-                        type="checkbox"
-                        checked={repForm.actualizar_costos}
-                        onChange={(e) => setRepForm(prev => ({ ...prev, actualizar_costos: e.target.checked }))}
-                        className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 border-slate-300"
-                      />
-                      <div className="text-left leading-normal">
-                        <span className="block text-xs font-bold text-slate-800">Actualizar costos de compra</span>
-                        <span className="block text-[10px] text-slate-400">Establece el costo unitario como precio compra del catálogo</span>
+                      {/* TRIGGER CONTROLS: ACTUALIZAR STOCK, COSTOS, ENVIAR AUDITORIA CHECKBOXES */}
+                      <div className="bg-slate-50 p-4 border border-slate-200 rounded-xl grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <label className="flex items-center gap-2 cursor-pointer py-1 select-none">
+                          <input
+                            type="checkbox"
+                            checked={repForm.actualizar_stock}
+                            onChange={(e) => setRepForm(prev => ({ ...prev, actualizar_stock: e.target.checked }))}
+                            className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 border-slate-300"
+                          />
+                          <div className="text-left leading-normal">
+                            <span className="block text-xs font-bold text-slate-800">Actualizar stock físico</span>
+                            <span className="block text-[10px] text-slate-400">Sumar automáticamente cantidad al depósito destino</span>
+                          </div>
+                        </label>
+
+                        <label className="flex items-center gap-2 cursor-pointer py-1 select-none">
+                          <input
+                            type="checkbox"
+                            checked={repForm.actualizar_costos}
+                            onChange={(e) => setRepForm(prev => ({ ...prev, actualizar_costos: e.target.checked }))}
+                            className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 border-slate-300"
+                          />
+                          <div className="text-left leading-normal">
+                            <span className="block text-xs font-bold text-slate-800">Actualizar costos de compra</span>
+                            <span className="block text-[10px] text-slate-400">Establece el costo unitario como precio compra del catálogo</span>
+                          </div>
+                        </label>
+
+                        <label className="flex items-center gap-2 cursor-pointer py-1 select-none">
+                          <input
+                            type="checkbox"
+                            checked={repForm.actualizar_precio_sugerido}
+                            onChange={(e) => setRepForm(prev => ({ ...prev, actualizar_precio_sugerido: e.target.checked }))}
+                            className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 border-slate-300"
+                          />
+                          <div className="text-left leading-normal">
+                            <span className="block text-xs font-bold text-slate-800">Actualizar precios venta sugeridos</span>
+                            <span className="block text-[10px] text-slate-400">Ajusta los precios de venta en los almacenes centrales</span>
+                          </div>
+                        </label>
+
+                        <label className="flex items-center gap-2 cursor-pointer py-1 select-none">
+                          <input
+                            type="checkbox"
+                            checked={repForm.registrar_auditoria}
+                            onChange={(e) => setRepForm(prev => ({ ...prev, registrar_auditoria: e.target.checked }))}
+                            className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 border-slate-300"
+                          />
+                          <div className="text-left leading-normal">
+                            <span className="block text-xs font-bold text-slate-800">Registrar en auditoría de control</span>
+                            <span className="block text-[10px] text-slate-400">Crea un registro de auditoría en el ledger de seguridad</span>
+                          </div>
+                        </label>
                       </div>
-                    </label>
 
-                    <label className="flex items-center gap-2 cursor-pointer py-1 select-none">
-                      <input
-                        type="checkbox"
-                        checked={repForm.actualizar_precio_sugerido}
-                        onChange={(e) => setRepForm(prev => ({ ...prev, actualizar_precio_sugerido: e.target.checked }))}
-                        className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 border-slate-300"
-                      />
-                      <div className="text-left leading-normal">
-                        <span className="block text-xs font-bold text-slate-800">Actualizar precios venta sugeridos</span>
-                        <span className="block text-[10px] text-slate-400">Ajusta los precios de venta en los almacenes centrales</span>
+                      {/* Step Footer Navigation & Final submit buttons */}
+                      <div className="flex flex-col sm:flex-row items-center gap-3 pt-2">
+                        <button
+                          type="button"
+                          onClick={() => setRepStep(2)}
+                          className="w-full sm:w-auto px-4 py-2.5 border border-slate-200 text-slate-600 font-bold rounded-xl text-xs flex items-center justify-center gap-1.5 transition-all hover:bg-slate-50 cursor-pointer shrink-0"
+                        >
+                          <ArrowLeft className="w-3.5 h-3.5" />
+                          <span>Volver a Ítems</span>
+                        </button>
+
+                        <button
+                          type="submit"
+                          className="flex-grow w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold text-xs shadow-md shadow-indigo-600/15 cursor-pointer flex items-center justify-center gap-2"
+                        >
+                          <Check className="w-4 h-4" />
+                          <span>
+                            {isEditingRep ? "Guardar Modificaciones de la Factura" : "Someter y Registrar Factura de Proveedor"}
+                          </span>
+                        </button>
                       </div>
-                    </label>
-
-                    <label className="flex items-center gap-2 cursor-pointer py-1 select-none">
-                      <input
-                        type="checkbox"
-                        checked={repForm.registrar_auditoria}
-                        onChange={(e) => setRepForm(prev => ({ ...prev, registrar_auditoria: e.target.checked }))}
-                        className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 border-slate-300"
-                      />
-                      <div className="text-left leading-normal">
-                        <span className="block text-xs font-bold text-slate-800">Registrar en auditoría de control</span>
-                        <span className="block text-[10px] text-slate-400">Crea un registro de auditoría en el ledger de seguridad</span>
-                      </div>
-                    </label>
-                  </div>
-
-                  {/* Submit Button */}
-                  <button
-                    type="submit"
-                    className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold text-xs shadow-md shadow-indigo-600/15 cursor-pointer flex items-center justify-center gap-2"
-                  >
-                    <Check className="w-4 h-4" />
-                    <span>
-                      {isEditingRep ? "Guardar Modificaciones de la Reposición" : "Someter y Registrar Reposición (Ajuste Positivo)"}
-                    </span>
-                  </button>
+                    </div>
+                  )}
                 </form>
               </div>
 
@@ -6252,9 +6915,9 @@ export default function App() {
                       </div>
                       <div>
                         <h3 className="text-xs font-bold uppercase tracking-wider text-slate-900">
-                          Historial de Reposiciones Registradas
+                          Historial de Facturas de Proveedores
                         </h3>
-                        <p className="text-[10px] text-slate-400 font-mono">Ledger histórico con reversión de inventarios</p>
+                        <p className="text-[10px] text-slate-400 font-mono">Registro histórico de comprobantes y egresos</p>
                       </div>
                     </div>
                   </div>
@@ -6356,8 +7019,8 @@ export default function App() {
                     {reposiciones.length === 0 && (
                       <div className="p-12 text-center text-slate-450 border-2 border-dashed border-slate-150 rounded-xl space-y-2 font-semibold">
                         <History className="w-8 h-8 text-slate-300 mx-auto" />
-                        <p className="text-xs">No hay registros de reposición guardados en el sistema.</p>
-                        <p className="text-[10px] text-slate-400 font-mono font-medium">Usa la sección de Ajuste Positivo a la izquierda</p>
+                        <p className="text-xs">No hay registros de facturas de proveedores guardadas en el sistema.</p>
+                        <p className="text-[10px] text-slate-400 font-mono font-medium">Usa el formulario a la izquierda para registrar una factura</p>
                       </div>
                     )}
                   </div>
@@ -11656,143 +12319,72 @@ export default function App() {
         </div>
       )}
 
-      {/* MODIFICAR REGISTRO DE VENTA MODAL */}
-      {editingSale && (
+      {/* MODIFICAR FACTURA COMPLETA MODAL */}
+      {editingGroup && (
         <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center p-4 z-50 overflow-y-auto">
-          <div className="bg-white rounded-2xl max-w-xl w-full p-6 border border-slate-200 shadow-2xl space-y-4 my-8 text-left">
+          <div className="bg-white rounded-2xl max-w-2xl w-full p-6 border border-slate-200 shadow-2xl space-y-4 my-8 text-left animate-fade-in">
             <div className="flex items-center justify-between border-b border-slate-100 pb-3 border-dashed">
               <h2 className="text-sm font-bold uppercase tracking-wider text-slate-900 flex items-center gap-2">
                 <Pencil className="w-4 h-4 text-indigo-600" />
-                Modificar Registro de Venta #{editingSale.id}
+                Modificar Factura / Venta Grupal
               </h2>
               <button
                 type="button"
-                onClick={() => setEditingSale(null)}
+                onClick={() => setEditingGroup(null)}
                 className="text-slate-400 hover:text-slate-600 font-bold text-sm cursor-pointer"
               >
                 ✕
               </button>
             </div>
 
-            <form onSubmit={handleSaveEditSaleSubmit} className="space-y-4 text-xs font-medium text-slate-700">
-              {editError && (
+            <form onSubmit={handleSaveGroupEditSaleSubmit} className="space-y-4 text-xs font-medium text-slate-700">
+              {editGroupError && (
                 <div className="bg-red-50 border border-red-100 text-red-750 p-2.5 rounded-xl font-semibold leading-relaxed">
-                  ⚠️ {editError}
+                  ⚠️ {editGroupError}
                 </div>
               )}
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 {/* Cliente */}
                 <div className="space-y-1">
-                  <label htmlFor="edit-sale-client" className="text-slate-500 uppercase tracking-widest text-[9px] font-bold block text-left">
+                  <label htmlFor="edit-group-client" className="text-slate-500 uppercase tracking-widest text-[9px] font-bold block text-left">
                     Nombre del Cliente
                   </label>
                   <input
-                    id="edit-sale-client"
+                    id="edit-group-client"
                     type="text"
                     required
-                    value={editClient}
-                    onChange={(e) => setEditClient(e.target.value)}
+                    value={editGroupCliente}
+                    onChange={(e) => setEditGroupCliente(e.target.value)}
                     className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-800 font-semibold focus:outline-none"
                     placeholder="Ej. Juan Pérez"
                   />
                 </div>
 
-                {/* Artículo */}
+                {/* Fecha */}
                 <div className="space-y-1">
-                  <label htmlFor="edit-sale-article" className="text-slate-500 uppercase tracking-widest text-[9px] font-bold block text-left">
-                    Artículo o Combo Vendido
-                  </label>
-                  <select
-                    id="edit-sale-article"
-                    value={editArticleId}
-                    onChange={(e) => {
-                      const newArtId = Number(e.target.value);
-                      setEditArticleId(newArtId);
-                      // Update default price based on the selected article
-                      const chosenArt = catalog.find(a => a.id === newArtId);
-                      if (chosenArt) {
-                        setEditPrecioVenta((chosenArt.precio_venta || 0) * editCantidad);
-                      }
-                    }}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-800 font-semibold focus:outline-none"
-                  >
-                    {catalog.map(a => (
-                      <option key={a.id} value={a.id}>
-                        [{a.codigo}] {a.nombre} (${a.precio_venta})
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                {/* Cantidad */}
-                <div className="space-y-1">
-                  <label htmlFor="edit-sale-qty" className="text-slate-500 uppercase tracking-widest text-[9px] font-bold block text-left">
-                    Cantidad (Unidades)
+                  <label htmlFor="edit-group-date" className="text-slate-500 uppercase tracking-widest text-[9px] font-bold block text-left">
+                    Fecha de Creación
                   </label>
                   <input
-                    id="edit-sale-qty"
-                    type="number"
+                    id="edit-group-date"
+                    type="date"
                     required
-                    min={1}
-                    step="any"
-                    value={editCantidad}
-                    onChange={(e) => {
-                      const newQty = Math.max(1, Number(e.target.value));
-                      setEditCantidad(newQty);
-                      // Update price override calculation
-                      const chosenArt = catalog.find(a => a.id === editArticleId);
-                      if (chosenArt) {
-                        setEditPrecioVenta((chosenArt.precio_venta || 0) * newQty);
-                      }
-                    }}
+                    value={editGroupFecha}
+                    onChange={(e) => setEditGroupFecha(e.target.value)}
                     className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-800 font-semibold focus:outline-none"
-                  />
-                </div>
-
-                {/* Precio Venta */}
-                <div className="space-y-1">
-                  <label htmlFor="edit-sale-price" className="text-slate-500 uppercase tracking-widest text-[9px] font-bold block text-left">
-                    Precio Total Venta ($)
-                  </label>
-                  <input
-                    id="edit-sale-price"
-                    type="number"
-                    required
-                    min={0}
-                    step="any"
-                    value={editPrecioVenta}
-                    onChange={(e) => setEditPrecioVenta(Number(e.target.value))}
-                    className="w-full bg-slate-100 border border-slate-200 rounded-xl px-3 py-2 text-indigo-700 font-bold text-xs focus:outline-none"
-                  />
-                </div>
-
-                {/* Costo Envío */}
-                <div className="space-y-1">
-                  <label htmlFor="edit-sale-shipping" className="text-slate-500 uppercase tracking-widest text-[9px] font-bold block text-left">
-                    Costo de Envío ($)
-                  </label>
-                  <input
-                    id="edit-sale-shipping"
-                    type="number"
-                    min={0}
-                    step="any"
-                    value={editCostoEnvio}
-                    onChange={(e) => setEditCostoEnvio(Number(e.target.value))}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-800 font-semibold focus:outline-none"
-                    placeholder="Ej. 150"
                   />
                 </div>
 
                 {/* Sucursal */}
                 <div className="space-y-1">
-                  <label htmlFor="edit-sale-branch" className="text-slate-500 uppercase tracking-widest text-[9px] font-bold block text-left">
+                  <label htmlFor="edit-group-branch" className="text-slate-500 uppercase tracking-widest text-[9px] font-bold block text-left">
                     Sucursal de Origen
                   </label>
                   <select
-                    id="edit-sale-branch"
-                    value={editSucursal}
-                    onChange={(e) => setEditSucursal(e.target.value as 'Mvd' | 'Pin')}
+                    id="edit-group-branch"
+                    value={editGroupSucursal}
+                    onChange={(e) => setEditGroupSucursal(e.target.value as 'Mvd' | 'Pin')}
                     className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-800 font-semibold focus:outline-none"
                   >
                     <option value="Mvd">Montevideo</option>
@@ -11802,13 +12394,13 @@ export default function App() {
 
                 {/* Canal */}
                 <div className="space-y-1">
-                  <label htmlFor="edit-sale-channel" className="text-slate-500 uppercase tracking-widest text-[9px] font-bold block text-left">
+                  <label htmlFor="edit-group-channel" className="text-slate-500 uppercase tracking-widest text-[9px] font-bold block text-left">
                     Canal de Venta
                   </label>
                   <select
-                    id="edit-sale-channel"
-                    value={editCanal}
-                    onChange={(e) => setEditCanal(e.target.value)}
+                    id="edit-group-channel"
+                    value={editGroupCanal}
+                    onChange={(e) => setEditGroupCanal(e.target.value)}
                     className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-800 font-semibold focus:outline-none"
                   >
                     <option value="WhatsApp">WhatsApp</option>
@@ -11819,15 +12411,31 @@ export default function App() {
                   </select>
                 </div>
 
-                {/* Aprobado */}
+                {/* Costo Envío */}
                 <div className="space-y-1">
-                  <label htmlFor="edit-sale-approved" className="text-slate-500 uppercase tracking-widest text-[9px] font-bold block text-left">
+                  <label htmlFor="edit-group-shipping" className="text-slate-500 uppercase tracking-widest text-[9px] font-bold block text-left">
+                    Costo de Envío ($)
+                  </label>
+                  <input
+                    id="edit-group-shipping"
+                    type="number"
+                    min={0}
+                    step="any"
+                    value={editGroupCostoEnvio}
+                    onChange={(e) => setEditGroupCostoEnvio(Number(e.target.value))}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-800 font-semibold focus:outline-none"
+                  />
+                </div>
+
+                {/* Estado Aprobado */}
+                <div className="space-y-1">
+                  <label htmlFor="edit-group-approved" className="text-slate-500 uppercase tracking-widest text-[9px] font-bold block text-left">
                     Estado de la Venta
                   </label>
                   <select
-                    id="edit-sale-approved"
-                    value={editAprobado}
-                    onChange={(e) => setEditAprobado(e.target.value)}
+                    id="edit-group-approved"
+                    value={editGroupAprobado}
+                    onChange={(e) => setEditGroupAprobado(e.target.value)}
                     className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-800 font-semibold focus:outline-none"
                   >
                     <option value="Aprobado">Aprobado</option>
@@ -11837,14 +12445,109 @@ export default function App() {
                 </div>
               </div>
 
+              {/* LISTA DE ARTÍCULOS EN LA FACTURA */}
+              <div className="space-y-2.5 pt-2">
+                <h3 className="text-xs uppercase font-extrabold tracking-wider text-slate-500 flex items-center justify-between">
+                  <span>Artículos de la Factura</span>
+                  <span className="font-mono text-slate-400 font-medium">({editGroupItems.length} items restantes)</span>
+                </h3>
+
+                <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
+                  {editGroupItems.length === 0 ? (
+                    <div className="p-8 text-center text-slate-400 font-mono bg-slate-50 rounded-xl border border-dashed border-slate-200">
+                      No hay artículos. Al guardar, se eliminará toda la venta.
+                    </div>
+                  ) : (
+                    editGroupItems.map((item, idx) => (
+                      <div key={item.id} className="bg-slate-50 p-3 rounded-xl border border-slate-200 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                        <div className="min-w-0 flex-1">
+                          <span className="font-bold text-slate-800 block truncate text-xs">
+                            {item.articulo_nombre}
+                          </span>
+                          <span className="text-[10px] text-slate-400 font-mono">
+                            Código: {item.articulo_codigo}
+                          </span>
+                        </div>
+
+                        <div className="flex items-center gap-2 w-full sm:w-auto shrink-0">
+                          {/* Cantidad input */}
+                          <div className="space-y-0.5 w-20">
+                            <label className="text-[9px] text-slate-400 uppercase tracking-widest font-bold">Cant.</label>
+                            <input
+                              type="number"
+                              min={1}
+                              step="any"
+                              value={item.cantidad}
+                              onChange={(e) => {
+                                const newQty = Math.max(1, Number(e.target.value));
+                                const updatedItems = [...editGroupItems];
+                                updatedItems[idx].cantidad = newQty;
+                                
+                                // Recalculate item total if possible based on catalog price
+                                const catalogItem = catalog.find(c => c.id === item.articulo_id);
+                                if (catalogItem) {
+                                  updatedItems[idx].precio_venta = (catalogItem.precio_venta || 0) * newQty;
+                                }
+                                setEditGroupItems(updatedItems);
+                              }}
+                              className="w-full bg-white border border-slate-250 rounded-lg px-2 py-1 text-slate-800 font-bold font-mono focus:outline-none text-[11px]"
+                            />
+                          </div>
+
+                          {/* Precio Total Venta input */}
+                          <div className="space-y-0.5 w-28">
+                            <label className="text-[9px] text-slate-400 uppercase tracking-widest font-bold">Total ($)</label>
+                            <input
+                              type="number"
+                              min={0}
+                              step="any"
+                              value={item.precio_venta}
+                              onChange={(e) => {
+                                const newPrice = Number(e.target.value);
+                                const updatedItems = [...editGroupItems];
+                                updatedItems[idx].precio_venta = newPrice;
+                                setEditGroupItems(updatedItems);
+                              }}
+                              className="w-full bg-white border border-slate-250 rounded-lg px-2 py-1 text-indigo-700 font-bold font-mono focus:outline-none text-[11px]"
+                            />
+                          </div>
+
+                          {/* Eliminar Item de la Factura button */}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setDeletedGroupItemIds(prev => [...prev, item.id]);
+                              setEditGroupItems(editGroupItems.filter(x => x.id !== item.id));
+                            }}
+                            className="p-1.5 text-red-500 hover:text-red-700 hover:bg-red-50 rounded-lg transition-colors mt-4"
+                            title="Quitar artículo de la factura"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+
+                {editGroupItems.length > 0 && (
+                  <div className="bg-indigo-50/50 p-2.5 rounded-xl border border-indigo-100/50 flex items-center justify-between">
+                    <span className="font-extrabold text-indigo-800 text-[10px] uppercase tracking-wider">Monto Total Estimado de Factura</span>
+                    <span className="font-mono font-extrabold text-indigo-900 text-xs">
+                      ${editGroupItems.reduce((acc, x) => acc + Number(x.precio_venta || 0), 0).toLocaleString('es-UY', { minimumFractionDigits: 1 })}
+                    </span>
+                  </div>
+                )}
+              </div>
+
               <div className="bg-slate-50 p-3 rounded-xl border border-slate-100 leading-normal text-slate-500 text-[10px] text-left">
-                💡 <strong>Gestión Inteligente de Stock:</strong> Si marcas la venta como <em>Aprobado</em>, el stock se descontará de la sucursal elegida. Si la modificas más adelante, el stock anterior será reincorporado automáticamente antes de computar las nuevas cantidades.
+                💡 <strong>Gestión Inteligente de Stock:</strong> Si marcas la venta como <em>Aprobado</em>, el stock de cada artículo se descontará de la sucursal elegida. Al modificar, el stock anterior de cada línea es reincorporado automáticamente en el servidor antes de computar los nuevos valores.
               </div>
 
               <div className="flex items-center justify-between pt-3 border-t border-slate-100">
                 <button
                   type="button"
-                  onClick={() => setEditingSale(null)}
+                  onClick={() => setEditingGroup(null)}
                   className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold text-xs rounded-xl cursor-pointer"
                 >
                   Cancelar
@@ -11852,10 +12555,10 @@ export default function App() {
 
                 <button
                   type="submit"
-                  disabled={editIsSubmitting}
+                  disabled={editGroupIsSubmitting}
                   className="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl cursor-pointer disabled:opacity-50"
                 >
-                  {editIsSubmitting ? "Guardando Cambios..." : "Guardar Cambios"}
+                  {editGroupIsSubmitting ? "Guardando Cambios..." : "Guardar Cambios"}
                 </button>
               </div>
             </form>
@@ -12028,10 +12731,10 @@ export default function App() {
                 </div>
                 <div>
                   <h2 className="text-sm font-bold uppercase tracking-wider text-slate-950">
-                    Registrar Artículo Nuevo sobre la marcha
+                    Registrar Artículo Nuevo (Local - No Web)
                   </h2>
                   <p className="text-[10px] text-slate-500 font-mono font-semibold">
-                    Crea el artículo e incorpóralo directo al detalle de factura.
+                    Crea el artículo en la base de datos local para la factura. No se creará en la tienda web.
                   </p>
                 </div>
               </div>
